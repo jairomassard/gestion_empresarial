@@ -8647,7 +8647,7 @@ def buscar_producto_compuesto():
 
 if __name__ == '__main__':
         
-    with app.app_context():
-        db.create_all()  # Crea las tablas si no existen
+    #with app.app_context():
+        #db.create_all()  # Crea las tablas si no existen
     port = int(os.getenv('PORT', 5000))  # Usa $PORT si existe (Railway), o 5000 por defecto
     app.run(debug=True, host='0.0.0.0', port=port)
