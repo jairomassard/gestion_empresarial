@@ -8633,6 +8633,8 @@ def buscar_producto_compuesto():
 #    app.run(debug=True, host='0.0.0.0', port=5000)
 
 if __name__ == '__main__':
-    import os
-    port = int(os.getenv('PORT', 5000))  # Usa el puerto de Railway si está definido, o 5000 por defecto
+        
+    with app.app_context():
+        db.create_all()  # Crea las tablas si no existen
+    port = int(os.getenv('PORT', 5000))  # Usa $PORT si existe (Railway), o 5000 por defecto
     app.run(debug=True, host='0.0.0.0', port=port)
