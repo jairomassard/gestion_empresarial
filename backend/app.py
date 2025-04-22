@@ -81,13 +81,13 @@ def unauthorized_callback(error):
 # Configurar CORS para permitir solicitudes desde el frontend
 # En desarrollo: localhost:8080 y 192.168.0.47:8080
 # En producción: el dominio del frontend en Railway
-allowed_origins = [
-    "http://localhost:8080",
-    "http://192.168.0.47:8080",
-    # Agrega el dominio del frontend en Railway cuando lo tengas
-    "https://frontend.railway.app"  # Placeholder, cámbialo por el dominio real
-]
-CORS(app, resources={r"/*": {"origins": allowed_origins}})
+#allowed_origins = [
+#    "http://localhost:8080",
+#    "http://192.168.0.47:8080",
+#    # Agrega el dominio del frontend en Railway cuando lo tengas
+#    "https://frontend.railway.app"  # Placeholder, cámbialo por el dominio real
+#]
+#CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
 
 def get_db_connection():
