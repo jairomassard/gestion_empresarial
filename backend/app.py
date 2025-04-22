@@ -319,6 +319,9 @@ def draw_wrapped_text_traslado(pdf, x, y, text, max_width):
 
 
 # Enpooints para listar las clases de modelos registrados
+@app.route('/')
+def home():
+    return jsonify({"message": "Bienvenido a la API de Gestión Empresarial"})
 
 @app.route('/api/debug-models')
 def debug_models():
