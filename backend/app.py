@@ -34,8 +34,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 from decimal import Decimal
 
 
-# Crer la aplicacpon Flask
-app = Flask(__name__)
+# Crear la aplicación Flask
+app = Flask(__name__, static_folder='static', static_url_path='')
 app.config.from_object(Config)
 
 # Configurar logging para ver errores detallados
@@ -46,8 +46,8 @@ logger = logging.getLogger(__name__)
 app.secret_key = app.config['SECRET_KEY']  # Usamos la clave del .env se usa para las sesiones
 app.config['JWT_SECRET_KEY'] = app.config['SECRET_KEY']  # Para JWT
 # Al inicio de app.py, después de app.config.from_object(Config)
-logger.info(f"SECRET_KEY: {app.config['SECRET_KEY']}")
-logger.info(f"JWT_SECRET_KEY: {app.config['JWT_SECRET_KEY']}")
+#logger.info(f"SECRET_KEY: {app.config['SECRET_KEY']}")
+#logger.info(f"JWT_SECRET_KEY: {app.config['JWT_SECRET_KEY']}")
 
 # Inicializar SQLAlchemy con la app
 db.init_app(app)
@@ -319,9 +319,19 @@ def draw_wrapped_text_traslado(pdf, x, y, text, max_width):
 
 
 # Enpooints para listar las clases de modelos registrados
+# Ruta para servir el frontend (index.html)
 @app.route('/')
-def home():
-    return jsonify({"message": "Bienvenido a la API de Gestión Empresarial"})
+def serve_frontend():
+    return send_from_directory(app.static_folder, 'index.html')
+
+# Ruta para servir otros archivos estáticos (css, js, etc.)
+@app.route('/<path:path>')
+def serve_static(path):
+    try:
+        return send_from_directory(app.static_folder, path)
+    except Exception as e:
+        # Si el archivo no existe, devolver index.html para manejar rutas de Vue Router
+        return send_from_directory(app.static_folder, 'index.html')
 
 @app.route('/api/debug-models')
 def debug_models():
