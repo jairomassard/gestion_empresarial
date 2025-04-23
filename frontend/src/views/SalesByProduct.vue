@@ -1,8 +1,8 @@
 <template>
   <div class="sales-by-product">
     <h1>
-      Ventas por Producto - {{ months[month - 1].name }}
-      <span v-if="day"> {{ day }} </span>
+      Ventas por Producto - {{ month === 0 ? 'Todos los meses' : months.find(m => m.num === month)?.name }}
+      <span v-if="day && month !== 0"> {{ day }} </span>
       {{ year }}
     </h1>
     <div class="filters">
@@ -15,7 +15,7 @@
         <option v-for="m in months" :key="m.num" :value="m.num">{{ m.name }}</option>
       </select>
       <label>Día:</label>
-      <select v-model="day" @change="fetchData">
+      <select v-model="day" @change="fetchData" :disabled="month === 0">
         <option :value="null">Todo el mes</option>
         <option v-for="d in days" :key="d" :value="d">{{ d }}</option>
       </select>
@@ -45,7 +45,7 @@
 
     <!-- Mensaje si no hay datos -->
     <div v-if="noData" class="no-data-message">
-      No hay datos disponibles para el mes, año, día y PDV seleccionados.
+      No hay datos disponibles para el período, estatus y PDV seleccionados.
     </div>
 
     <!-- Contenedor para gráficos y tabla -->
@@ -106,9 +106,8 @@ import {
   CategoryScale,
   LinearScale
 } from 'chart.js';
-import ChartDataLabels from 'chartjs-plugin-datalabels'; // Importar el plugin
+import ChartDataLabels from 'chartjs-plugin-datalabels';
 
-// Registrar los componentes de Chart.js
 ChartJS.register(
   Title,
   Tooltip,
@@ -132,7 +131,9 @@ export default {
     const currentMonth = currentDate.getMonth() + 1;
     const currentYear = currentDate.getFullYear();
     const month = ref(currentMonth);
+
     const months = ref([
+      { num: 0, name: 'Todos los meses' }, // Añadir opción para todos los meses
       { num: 1, name: 'Enero' }, { num: 2, name: 'Febrero' }, { num: 3, name: 'Marzo' },
       { num: 4, name: 'Abril' }, { num: 5, name: 'Mayo' }, { num: 6, name: 'Junio' },
       { num: 7, name: 'Julio' }, { num: 8, name: 'Agosto' }, { num: 9, name: 'Septiembre' },
@@ -152,7 +153,7 @@ export default {
 
     // Computed para determinar si no hay datos
     const noData = computed(() => {
-      const result = filteredSalesData.value.length > 0 && filteredSalesData.value.every(row => row.total === 0);
+      const result = filteredSalesData.value.length === 0 || filteredSalesData.value.every(row => row.total === 0);
       console.log('noData:', result, 'filteredSalesData:', filteredSalesData.value);
       return result;
     });
@@ -183,7 +184,11 @@ export default {
 
     // Actualizar la lista de días disponibles según el año y mes seleccionados
     const updateDays = () => {
-      if (!year.value || !month.value) return;
+      if (!year.value || month.value === 0) {
+        days.value = [];
+        day.value = null;
+        return;
+      }
       const daysInMonth = new Date(year.value, month.value, 0).getDate();
       days.value = Array.from({ length: daysInMonth }, (_, i) => i + 1);
       if (day.value && day.value > daysInMonth) {
@@ -212,8 +217,8 @@ export default {
         const response = await axios.get('/dashboard/sales-by-product', {
           params: {
             year: year.value,
-            month: month.value,
-            day: day.value,
+            month: month.value === 0 ? null : month.value, // Enviar null para "Todos los meses"
+            day: month.value === 0 ? null : day.value, // No enviar día si es "Todos los meses"
             status: status.value,
             pdv: selectedPdv.value
           }
@@ -327,9 +332,9 @@ export default {
           }
         },
         datalabels: {
-          anchor: 'center', // Posicionar la etiqueta en el centro de la barra
-          align: 'center', // Alinear el texto al centro
-          color: '#fff', // Color del texto (blanco para que contraste con el fondo de la barra)
+          anchor: 'center',
+          align: 'center',
+          color: '#fff',
           font: {
             size: 10,
             weight: 'bold',
@@ -348,8 +353,8 @@ export default {
     // Datos para el gráfico de barras horizontales (Top 20 productos menos vendidos)
     const bottomBarChartData = computed(() => {
       const bottomProducts = [...salesData.value]
-        .sort((a, b) => a.total - b.total) // Ordenar de menor a mayor
-        .slice(0, 20); // Tomar los 20 primeros (los menos vendidos)
+        .sort((a, b) => a.total - b.total)
+        .slice(0, 20);
 
       const labels = bottomProducts.map(row => row.product);
       const data = bottomProducts.map(row => row.total);
@@ -360,7 +365,7 @@ export default {
           {
             label: 'Ventas (COP)',
             data: data,
-            backgroundColor: 'rgba(255, 99, 132, 0.6)', // Color diferente para distinguirlo
+            backgroundColor: 'rgba(255, 99, 132, 0.6)',
             borderColor: 'rgba(255, 99, 132, 1)',
             borderWidth: 1
           }
@@ -411,9 +416,9 @@ export default {
           }
         },
         datalabels: {
-          anchor: 'center', // Posicionar la etiqueta en el centro de la barra
-          align: 'center', // Alinear el texto al centro
-          color: '#fff', // Color del texto (blanco para que contraste con el fondo de la barra)
+          anchor: 'center',
+          align: 'center',
+          color: '#fff',
           font: {
             size: 10,
             weight: 'bold',

@@ -2520,7 +2520,7 @@ def get_sales_by_payment_method():
         return jsonify({"error": str(e)}), 500
 
 
-
+# Endpoint para ventas por producto
 @app.route('/dashboard/sales-by-product', methods=['GET'])
 @jwt_required()
 def get_sales_by_product():
@@ -2543,10 +2543,10 @@ def get_sales_by_product():
 
         # Obtener parámetros de la solicitud
         year = request.args.get('year', type=int, default=2025)
-        month = request.args.get('month', type=int, default=1)  # Enero por defecto
-        day = request.args.get('day', type=int, default=None)  # Día opcional
+        month = request.args.get('month', type=int, default=None)  # Permitir None para todos los meses
+        day = request.args.get('day', type=int, default=None)
         status = request.args.get('status', default='Activo', type=str)
-        pdv = request.args.get('pdv', default=None, type=str)  # PDV opcional
+        pdv = request.args.get('pdv', default=None, type=str)
 
         # Obtener PDVs según estatus
         pdv_query = "SELECT PDV, data2 FROM PuntosDeVenta WHERE IdCliente = %s"
@@ -2561,7 +2561,6 @@ def get_sales_by_product():
 
         # Crear un mapeo de nombres completos a nombres en ventahistoricahora (usando data2)
         pdv_mapping = {row[0]: row[1] for row in pdv_data}
-        # Ajustar manualmente las diferencias conocidas
         pdv_mapping['ACA - Caja Portal'] = 'Portal del Prado'
         pdv_mapping['AQA - Caja la Castellana'] = 'La Castellana'
         logger.info(f"Mapeo de PDVs: {pdv_mapping}")
@@ -2572,9 +2571,13 @@ def get_sales_by_product():
             FROM ventahistoricahora vh
             WHERE vh.idcliente = %s
             AND EXTRACT(YEAR FROM vh.fecha) = %s
-            AND EXTRACT(MONTH FROM vh.fecha) = %s
         """
-        query_params = [id_cliente, year, month]
+        query_params = [id_cliente, year]
+
+        # Añadir filtro por mes si está presente
+        if month is not None:
+            sales_query += " AND EXTRACT(MONTH FROM vh.fecha) = %s"
+            query_params.append(month)
 
         # Añadir filtro por día si está presente
         if day is not None:
@@ -2585,7 +2588,6 @@ def get_sales_by_product():
         if pdv is not None:
             sales_query += " AND vh.almacen = (SELECT data2 FROM PuntosDeVenta WHERE IdCliente = %s AND PDV = %s)"
             query_params.extend([id_cliente, pdv])
-        # Si no se especifica un PDV, pero el estatus no es 'Todos', filtrar por los PDVs activos/inactivos
         elif status != 'Todos':
             sales_query += " AND vh.almacen IN (SELECT data2 FROM PuntosDeVenta WHERE IdCliente = %s AND Estado = %s)"
             query_params.extend([id_cliente, status])
@@ -2595,15 +2597,18 @@ def get_sales_by_product():
         sales_data = cursor.fetchall()
         logger.info(f"Datos de ventahistoricahora: {sales_data}")
 
-        # Obtener lista de productos únicos (considerando los filtros aplicados)
+        # Obtener lista de productos únicos
         products_query = """
             SELECT DISTINCT vh.descripcion
             FROM ventahistoricahora vh
             WHERE vh.idcliente = %s
             AND EXTRACT(YEAR FROM vh.fecha) = %s
-            AND EXTRACT(MONTH FROM vh.fecha) = %s
         """
-        products_params = [id_cliente, year, month]
+        products_params = [id_cliente, year]
+
+        if month is not None:
+            products_query += " AND EXTRACT(MONTH FROM vh.fecha) = %s"
+            products_params.append(month)
 
         if day is not None:
             products_query += " AND EXTRACT(DAY FROM vh.fecha) = %s"
@@ -2633,7 +2638,7 @@ def get_sales_by_product():
         for descripcion, almacen, importe in sales_data:
             pdv_key = next((p for p, a in pdv_mapping.items() if a == almacen), None)
             if not pdv_key or pdv_key not in all_pdvs:
-                continue  # Saltar si el PDV no está en la lista filtrada
+                continue
             importe = float(importe)
             sales_by_product[descripcion][pdv_key] = importe
             product_totals[descripcion] += importe
