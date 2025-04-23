@@ -151,24 +151,6 @@ def mes_a_numero(mes):
     return meses.get(mes.lower(), mes)  # Si ya es número, mantenerlo
 
 
-# Función para obtener el mes de corte
-def get_cutoff(id_cliente):
-    conn = psycopg2.connect(
-        dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
-        password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
-        port=app.config['DB_PORT']
-    )
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT CutoffYear, CutoffMonth FROM Configuraciones WHERE IdCliente = %s",
-        (id_cliente,)
-    )
-    result = cursor.fetchone()
-    conn.close()
-    return result if result else (2025, 2)  # Fallback si no hay configuración
-
-
-
 def calcular_inventario_producto(producto_id, idcliente):
     try:
         print(f"[DEBUG] Calculando inventario para producto_id={producto_id}, idcliente={idcliente}")
@@ -1181,7 +1163,7 @@ def toggle_usuario_estado(id):
         logger.error(f"Error al actualizar estado del usuario: {str(e)}")
         return jsonify({"error": "Error interno del servidor"}), 500
 
-# Endpoint para carga de ventas diarias
+
 @app.route('/upload_sales', methods=['POST'])
 @jwt_required()
 def upload_sales():
@@ -1215,33 +1197,23 @@ def upload_sales():
         )
         cursor = conn.cursor()
 
+        # Reemplazo de user_id = 1 con autenticación
         user_id = get_jwt_identity()
-        cursor.execute("SELECT idcliente FROM usuarios WHERE id = %s", (user_id,))
+        cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
         id_cliente_result = cursor.fetchone()
         if not id_cliente_result:
             conn.close()
             return jsonify({"error": "Usuario no encontrado"}), 404
         id_cliente = id_cliente_result[0]
 
-        cursor.execute("SELECT data2 FROM puntosdeventa WHERE idcliente = %s AND estado = 'Activo'", (id_cliente,))
+        cursor.execute("SELECT Data2 FROM PuntosDeVenta WHERE IdCliente = %s AND Estado = 'Activo'", (id_cliente,))
         valid_almacenes = set(row[0] for row in cursor.fetchall())
         invalid_almacenes = set(df["almacen"].unique()) - valid_almacenes
         if invalid_almacenes:
             conn.close()
             return jsonify({"error": f"Almacenes no válidos: {invalid_almacenes}"}), 400
 
-        # Obtener mes de corte
-        cutoff_year, cutoff_month = get_cutoff(id_cliente)
-
-        # Validar que los datos estén después del mes de corte
-        invalid_rows = df[
-            (df["fecha"].dt.year < cutoff_year) |
-            ((df["fecha"].dt.year == cutoff_year) & (df["fecha"].dt.month <= cutoff_month))
-        ]
-        if not invalid_rows.empty:
-            conn.close()
-            return jsonify({"error": f"Datos anteriores o iguales al mes de corte ({cutoff_year}-{cutoff_month}) no permitidos"}), 400
-
+        # Insertar datos diarios en VentaHistoricaHora
         data_to_insert = [
             (id_cliente, row["fecha"], row["rango_horarios"], row["almacen"],
              row["cliente"], row["vendedor"], row["descripcion"], row["uds"], row["importe"])
@@ -1249,44 +1221,57 @@ def upload_sales():
         ]
 
         query = """
-            INSERT INTO ventahistoricahora (idcliente, fecha, rango_horarios, almacen, 
-                                            cliente, vendedor, descripcion, uds, importe)
+            INSERT INTO VentaHistoricaHora (IdCliente, Fecha, Rango_horarios, Almacen, 
+                                            Cliente, Vendedor, Descripcion, Uds, Importe)
             VALUES %s
             ON CONFLICT DO NOTHING
         """
         execute_values(cursor, query, data_to_insert)
 
-        # Actualizar ventahistorica para los meses afectados
+        # Actualizar VentaHistorica para los meses afectados por la carga diaria
         years_months = df.groupby([df["fecha"].dt.year, df["fecha"].dt.month]).size().index
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+
         for year, month in years_months:
+            # Solo actualizar si no es un mes pasado con datos históricos ya cargados
             cursor.execute("""
-                INSERT INTO ventahistorica (idcliente, año, mes, pdv, venta)
-                SELECT 
-                    %s AS idcliente,
-                    EXTRACT(YEAR FROM v.fecha) AS año,
-                    EXTRACT(MONTH FROM v.fecha) AS mes,
-                    p.pdv,
-                    SUM(v.importe) AS venta
-                FROM ventahistoricahora v
-                JOIN puntosdeventa p ON v.almacen = p.data2 AND p.idcliente = %s
-                WHERE EXTRACT(YEAR FROM v.fecha) = %s
-                AND EXTRACT(MONTH FROM v.fecha) = %s
-                GROUP BY p.pdv, EXTRACT(YEAR FROM v.fecha), EXTRACT(MONTH FROM v.fecha)
-                ON CONFLICT (idcliente, pdv, año, mes) DO UPDATE
-                SET venta = EXCLUDED.venta
-            """, (id_cliente, id_cliente, year, month))
+                SELECT COUNT(*) 
+                FROM VentaHistorica 
+                WHERE IdCliente = %s AND Año = %s AND Mes = %s 
+                AND Venta IS NOT NULL
+            """, (id_cliente, year, month))
+            has_historical_data = cursor.fetchone()[0] > 0
+
+            # Actualizar solo si es el mes actual o no hay datos históricos
+            if not has_historical_data or (year == current_year and month == current_month):
+                cursor.execute("""
+                    INSERT INTO VentaHistorica (IdCliente, Año, Mes, PDV, Venta)
+                    SELECT 
+                        %s AS IdCliente,
+                        EXTRACT(YEAR FROM v.Fecha) AS Año,
+                        EXTRACT(MONTH FROM v.Fecha) AS Mes,
+                        p.PDV,
+                        SUM(v.Importe) AS Venta
+                    FROM VentaHistoricaHora v
+                    JOIN PuntosDeVenta p ON v.Almacen = p.Data2 AND p.IdCliente = %s AND p.Estado = 'Activo'
+                    WHERE EXTRACT(YEAR FROM v.Fecha) = %s
+                    AND EXTRACT(MONTH FROM v.Fecha) = %s
+                    GROUP BY p.PDV, EXTRACT(YEAR FROM v.Fecha), EXTRACT(MONTH FROM v.Fecha)
+                    ON CONFLICT (IdCliente, PDV, Año, Mes) DO UPDATE
+                    SET Venta = EXCLUDED.Venta
+                """, (id_cliente, id_cliente, year, month))
 
         conn.commit()
         conn.close()
 
-        return jsonify({"message": f"Loaded {len(data_to_insert)} rows and updated ventahistorica"}), 200
+        return jsonify({"message": f"Loaded {len(data_to_insert)} rows and updated VentaHistorica"}), 200
 
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
             conn.close()
         return jsonify({"error": str(e)}), 500
-    
 
 
 @app.route('/upload_sales_OLD', methods=['POST'])
@@ -1487,6 +1472,7 @@ def upload_venta_mensual():
         df = pd.read_excel(file)
         df.columns = ["año", "pdv", "mes", "venta"]
 
+        # Limpiar y convertir datos
         df["año"] = pd.to_numeric(df["año"], errors='coerce').astype(int)
         df["venta"] = df["venta"].replace({r'\$': '', r'\.': ''}, regex=True).astype(float)
         df["mes"] = df["mes"].apply(mes_a_numero)
@@ -1498,50 +1484,70 @@ def upload_venta_mensual():
         )
         cursor = conn.cursor()
 
+        # Reemplazo de user_id = 1 con autenticación
         user_id = get_jwt_identity()
-        cursor.execute("SELECT idcliente FROM usuarios WHERE id = %s", (user_id,))
+        cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
         id_cliente_result = cursor.fetchone()
         if not id_cliente_result:
             conn.close()
             return jsonify({"error": "Usuario no encontrado"}), 404
         id_cliente = id_cliente_result[0]
 
-        cursor.execute("SELECT pdv FROM puntosdeventa WHERE idcliente = %s", (id_cliente,))
+        # Validar todos los PDVs (activos e inactivos) para datos históricos
+        cursor.execute("SELECT PDV FROM PuntosDeVenta WHERE IdCliente = %s", (id_cliente,))
         valid_pdvs = set(row[0] for row in cursor.fetchall())
         invalid_pdvs = set(df["pdv"].unique()) - valid_pdvs
         if invalid_pdvs:
             conn.close()
             return jsonify({"error": f"PDVs no válidos: {invalid_pdvs}"}), 400
 
-        # Obtener mes de corte
-        cutoff_year, cutoff_month = get_cutoff(id_cliente)
-
-        # Validar que los datos estén antes del mes de corte
-        invalid_rows = df[(df["año"] > cutoff_year) | 
-                         ((df["año"] == cutoff_year) & (df["mes"] > cutoff_month))]
-        if not invalid_rows.empty:
-            conn.close()
-            return jsonify({"error": f"Datos posteriores al mes de corte ({cutoff_year}-{cutoff_month}) no permitidos"}), 400
-
+        # Agrupar datos del archivo para evitar duplicados
         df_grouped = df.groupby(["pdv", "año", "mes"], as_index=False)["venta"].sum()
 
+        # Insertar datos históricos con prioridad
         data_to_insert = [
             (id_cliente, row["año"], row["mes"], row["pdv"], row["venta"])
             for _, row in df_grouped.iterrows()
         ]
 
         query = """
-            INSERT INTO ventahistorica (idcliente, año, mes, pdv, venta)
+            INSERT INTO VentaHistorica (IdCliente, Año, Mes, PDV, Venta)
             VALUES %s
-            ON CONFLICT (idcliente, pdv, año, mes) DO UPDATE
-            SET venta = EXCLUDED.venta
+            ON CONFLICT (IdCliente, PDV, Año, Mes) DO UPDATE
+            SET Venta = EXCLUDED.Venta
         """
         execute_values(cursor, query, data_to_insert)
+
+        # Actualizar mes en curso solo si no hay datos en el archivo para ese mes
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+        has_current_month_data = any(
+            row["año"] == current_year and row["mes"] == current_month 
+            for _, row in df_grouped.iterrows()
+        )
+
+        if not has_current_month_data:
+            cursor.execute("""
+                INSERT INTO VentaHistorica (IdCliente, Año, Mes, PDV, Venta)
+                SELECT 
+                    %s AS IdCliente,
+                    EXTRACT(YEAR FROM v.Fecha) AS Año,
+                    EXTRACT(MONTH FROM v.Fecha) AS Mes,
+                    p.PDV,
+                    SUM(v.Importe) AS Venta
+                FROM VentaHistoricaHora v
+                JOIN PuntosDeVenta p ON v.Almacen = p.Data2 AND p.IdCliente = %s AND p.Estado = 'Activo'
+                WHERE EXTRACT(YEAR FROM v.Fecha) = %s
+                AND EXTRACT(MONTH FROM v.Fecha) = %s
+                GROUP BY p.PDV, EXTRACT(YEAR FROM v.Fecha), EXTRACT(MONTH FROM v.Fecha)
+                ON CONFLICT (IdCliente, PDV, Año, Mes) DO UPDATE
+                SET Venta = EXCLUDED.Venta
+            """, (id_cliente, id_cliente, current_year, current_month))
 
         conn.commit()
         conn.close()
 
-        return jsonify({"message": f"Loaded {len(data_to_insert)} rows"}), 200
+        return jsonify({"message": f"Loaded {len(data_to_insert)} rows{' and updated current month' if not has_current_month_data else ''}"}), 200
 
     except Exception as e:
         if 'conn' in locals():
@@ -1550,7 +1556,6 @@ def upload_venta_mensual():
         return jsonify({"error": str(e)}), 500
     
 
-# Endpoint para ventas históricas
 @app.route('/dashboard/historical_sales', methods=['GET'])
 @jwt_required()
 def historical_sales():
@@ -1562,76 +1567,44 @@ def historical_sales():
         )
         cursor = conn.cursor()
 
-        user_id = get_jwt_identity()
-        cursor.execute("SELECT idcliente FROM usuarios WHERE id = %s", (user_id,))
+        user_id = get_jwt_identity()  # ID del usuario autenticado como string
+        cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
         id_cliente = cursor.fetchone()
         if not id_cliente:
             conn.close()
             return jsonify({"error": "Usuario no encontrado"}), 404
         id_cliente = id_cliente[0]
 
-        # Obtener mes de corte
-        cutoff_year, cutoff_month = get_cutoff(id_cliente)
-
-        # Parámetros de la solicitud
+        # Obtener parámetros de la solicitud
         year = request.args.get('year', type=int)
         month = request.args.get('month', type=int)
         status = request.args.get('status', default='Todos', type=str)
-        pdv = request.args.get('pdv', type=str)
+        pdv = request.args.get('pdv', type=str)  # Nuevo parámetro para filtrar por PDV
 
-        # Construir la consulta SQL combinada
+        # Construir la consulta SQL
         query = """
-            SELECT Año, Mes, PDV, Venta
-            FROM (
-                -- Datos históricos de ventahistorica hasta el mes de corte
-                SELECT vh.Año, vh.Mes, vh.PDV, SUM(vh.Venta) as Venta
-                FROM ventahistorica vh
-                LEFT JOIN puntosdeventa pdv ON vh.PDV = pdv.PDV AND vh.idcliente = pdv.idcliente
-                WHERE vh.idcliente = %s
-                AND (vh.Año < %s OR (vh.Año = %s AND vh.Mes <= %s))
-                GROUP BY vh.Año, vh.Mes, vh.PDV
-
-                UNION ALL
-
-                -- Datos agregados de ventahistoricahora después del mes de corte
-                SELECT 
-                    EXTRACT(YEAR FROM v.fecha)::integer AS Año,
-                    EXTRACT(MONTH FROM v.fecha)::integer AS Mes,
-                    p.PDV,
-                    SUM(v.importe) AS Venta
-                FROM ventahistoricahora v
-                JOIN puntosdeventa p ON v.almacen = p.data2 AND p.idcliente = %s
-                WHERE v.idcliente = %s
-                AND (EXTRACT(YEAR FROM v.fecha) > %s OR 
-                     (EXTRACT(YEAR FROM v.fecha) = %s AND EXTRACT(MONTH FROM v.fecha) > %s))
-                GROUP BY EXTRACT(YEAR FROM v.fecha), EXTRACT(MONTH FROM v.fecha), p.PDV
-            ) AS combined
-            WHERE 1=1
+            SELECT vh.Año, vh.Mes, vh.PDV, SUM(vh.Venta) as Venta
+            FROM VentaHistorica vh
+            LEFT JOIN PuntosDeVenta pdv ON vh.PDV = pdv.PDV AND vh.IdCliente = pdv.IdCliente
+            WHERE vh.IdCliente = %s
         """
-        params = [id_cliente, cutoff_year, cutoff_year, cutoff_month, 
-                  id_cliente, id_cliente, cutoff_year, cutoff_year, cutoff_month]
+        params = [id_cliente]
 
-        # Aplicar filtros
         if year:
-            query += " AND Año = %s"
+            query += " AND vh.Año = %s"
             params.append(year)
         if month:
-            query += " AND Mes = %s"
+            query += " AND vh.Mes = %s"
             params.append(month)
         if status != 'Todos':
-            query += """
-                AND PDV IN (
-                    SELECT PDV 
-                    FROM puntosdeventa 
-                    WHERE idcliente = %s AND estado = %s
-                )
-            """
-            params.extend([id_cliente, status])
-        if pdv and pdv != 'Todos':
-            query += " AND PDV = %s"
+            query += " AND (pdv.Estado = %s OR pdv.Estado IS NULL)"
+            params.append(status)
+        if pdv and pdv != 'Todos':  # Filtrar por PDV si se especifica
+            query += " AND vh.PDV = %s"
             params.append(pdv)
 
-        query += " ORDER BY Año, Mes, PDV"
+        query += " GROUP BY vh.Año, vh.Mes, vh.PDV ORDER BY vh.Año, vh.Mes, vh.PDV"
+
         cursor.execute(query, params)
         rows = cursor.fetchall()
 
@@ -1640,18 +1613,44 @@ def historical_sales():
         years = sorted(set(row["year"] for row in data))
         response = {}
 
-        # Procesar datos para tabla pivote
-        pivot_data = []
-        totals = {year: 0.0 for year in years}
-        for pdv in pdvs:
-            pdv_data = {"pdv": pdv}
-            for year in years:
-                year_sales = sum(row["sales"] for row in data if row["pdv"] == pdv and row["year"] == year)
-                pdv_data[str(year)] = year_sales
-                totals[year] += year_sales
-            pivot_data.append(pdv_data)
-        pivot_data.append({"pdv": "Total", **{str(year): totals[year] for year in years}})
-        response = {"years": years, "data": pivot_data}
+        if not year and not month:  # Todos los años
+            pivot_data = []
+            totals = {year: 0.0 for year in years}
+            for pdv in pdvs:
+                pdv_data = {"pdv": pdv}
+                for year in years:
+                    year_sales = sum(row["sales"] for row in data if row["pdv"] == pdv and row["year"] == year)
+                    pdv_data[str(year)] = year_sales
+                    totals[year] += year_sales
+                pivot_data.append(pdv_data)
+            pivot_data.append({"pdv": "Total", **{str(year): totals[year] for year in years}})
+            response = {"years": years, "data": pivot_data}
+
+        elif month:  # Mes específico (con o sin año)
+            pivot_data = []
+            totals = {year: 0.0 for year in years}
+            for pdv in pdvs:
+                pdv_data = {"pdv": pdv}
+                for year in years:
+                    sales = next((row["sales"] for row in data if row["pdv"] == pdv and row["year"] == year), 0.0)
+                    pdv_data[str(year)] = sales
+                    totals[year] += sales
+                pivot_data.append(pdv_data)
+            pivot_data.append({"pdv": "Total", **{str(year): totals[year] for year in years}})
+            response = {"month": month, "years": years, "data": pivot_data}
+
+        else:  # Solo año
+            pivot_data = []
+            totals = {year: 0.0 for year in years}
+            for pdv in pdvs:
+                pdv_data = {"pdv": pdv}
+                for year in years:
+                    year_sales = sum(row["sales"] for row in data if row["pdv"] == pdv and row["year"] == year)
+                    pdv_data[str(year)] = year_sales
+                    totals[year] += year_sales
+                pivot_data.append(pdv_data)
+            pivot_data.append({"pdv": "Total", **{str(year): totals[year] for year in years}})
+            response = {"years": years, "data": pivot_data}
 
         conn.close()
         return jsonify(response), 200
@@ -1659,7 +1658,7 @@ def historical_sales():
     except Exception as e:
         logger.error(f"Error en historical_sales: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
+    
 
 @app.route('/budget/sales', methods=['GET'])
 @jwt_required()
@@ -8645,86 +8644,6 @@ def buscar_producto_compuesto():
     except Exception as e:
         logger.error(f"Error al buscar producto compuesto: {str(e)}")
         return jsonify({'error': 'Error al buscar producto compuesto'}), 500
-
-# Endpoint para obtener la configuración del mes de corte
-@app.route('/config/cutoff', methods=['GET'])
-@jwt_required()
-def get_cutoff_config():
-    try:
-        user_id = get_jwt_identity()
-        conn = psycopg2.connect(
-            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
-            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
-            port=app.config['DB_PORT']
-        )
-        cursor = conn.cursor()
-        cursor.execute("SELECT idcliente FROM usuarios WHERE id = %s", (user_id,))
-        id_cliente = cursor.fetchone()
-        if not id_cliente:
-            conn.close()
-            return jsonify({"error": "Usuario no encontrado"}), 404
-        id_cliente = id_cliente[0]
-
-        cursor.execute(
-            "SELECT cutoffyear, cutoffmonth FROM configuraciones WHERE idcliente = %s",
-            (id_cliente,)
-        )
-        result = cursor.fetchone()
-        conn.close()
-        if result:
-            return jsonify({"CutoffYear": result[0], "CutoffMonth": result[1]}), 200
-        return jsonify({"CutoffYear": null, "CutoffMonth": null}), 200
-    except Exception as e:
-        logger.error(f"Error en get_cutoff_config: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/config/cutoff', methods=['POST'])
-@jwt_required()
-def save_cutoff_config():
-    try:
-        data = request.get_json()
-        cutoff_year = data.get('CutoffYear')
-        cutoff_month = data.get('CutoffMonth')
-
-        if not cutoff_year or not cutoff_month:
-            return jsonify({"error": "CutoffYear y CutoffMonth son requeridos"}), 400
-        if not (2000 <= cutoff_year <= 2100):
-            return jsonify({"error": "El año debe estar entre 2000 y 2100"}), 400
-        if not (1 <= cutoff_month <= 12):
-            return jsonify({"error": "El mes debe estar entre 1 y 12"}), 400
-
-        user_id = get_jwt_identity()
-        conn = psycopg2.connect(
-            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
-            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
-            port=app.config['DB_PORT']
-        )
-        cursor = conn.cursor()
-        cursor.execute("SELECT idcliente FROM usuarios WHERE id = %s", (user_id,))
-        id_cliente = cursor.fetchone()
-        if not id_cliente:
-            conn.close()
-            return jsonify({"error": "Usuario no encontrado"}), 404
-        id_cliente = id_cliente[0]
-
-        cursor.execute("""
-            INSERT INTO configuraciones (idcliente, cutoffyear, cutoffmonth, updatedat)
-            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (idcliente) DO UPDATE
-            SET cutoffyear = EXCLUDED.cutoffyear,
-                cutoffmonth = EXCLUDED.cutoffmonth,
-                updatedat = CURRENT_TIMESTAMP
-        """, (id_cliente, cutoff_year, cutoff_month))
-
-        conn.commit()
-        conn.close()
-        return jsonify({"message": "Configuración guardada con éxito"}), 200
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-            conn.close()
-        logger.error(f"Error en save_cutoff_config: {str(e)}")
-        return jsonify({"error": str(e)}), 500
 
 
 

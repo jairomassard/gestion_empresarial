@@ -24,6 +24,8 @@ import AccumulatedSalesByPDV from '../views/AccumulatedSalesByPDV.vue';
 import PointsOfSale from '../views/PointsOfSale.vue';
 import ProfilesClientes from '../views/ProfilesClientes.vue';
 import UsersClientes from '../views/UsersClientes.vue';
+import CutoffConfig from '../views/CutoffConfig.vue';
+
 
 const routes = [
   {
@@ -146,6 +148,12 @@ const routes = [
   { path: '/points-of-sale', name: 'PointsOfSale', component: PointsOfSale, meta: { requiresAuth: true, seccion: 'cargue', subseccion: 'puntos_de_venta', permiso: 'editar' } },
   { path: '/profiles-clientes', name: 'ProfilesClientes', component: ProfilesClientes, meta: { requiresAuth: true, seccion: 'parametrizacion', subseccion: 'perfiles', permiso: 'editar' } },
   { path: '/users-clientes', name: 'UsersClientes', component: UsersClientes, meta: { requiresAuth: true, seccion: 'parametrizacion', subseccion: 'usuarios', permiso: 'editar' } },
+  {
+    path: '/cutoff-config',
+    name: 'CutoffConfig',
+    component: CutoffConfig,
+    meta: { requiresAuth: true, seccion: 'parametrizacion', subseccion: 'cutoff', permiso: 'editar' }
+  },
   {
     path: '/admin',
     name: 'Admin',

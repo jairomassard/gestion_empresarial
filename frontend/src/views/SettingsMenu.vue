@@ -27,6 +27,14 @@
               <font-awesome-icon icon="users" class="card-icon" />
               <span>Creación de Usuarios</span>
             </router-link>
+            <router-link
+              v-if="store.getters.hasPermission('parametrizacion', 'cutoff', 'editar')"
+              to="/cutoff-config"
+              class="card"
+            >
+              <font-awesome-icon icon="calendar-alt" class="card-icon" />
+              <span>Configuración de Mes de Corte</span>
+            </router-link>
           </div>
         </div>
       </div>
