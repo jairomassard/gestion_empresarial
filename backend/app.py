@@ -1856,18 +1856,13 @@ def delete_budget_sales():
 def get_monthly_performance():
     try:
         conn = psycopg2.connect(
-            dbname=app.config['DB_NAME'], 
-            user=app.config['DB_USER'],
-            password=app.config['DB_PASSWORD'], 
-            host=app.config['DB_HOST'],
+            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
+            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
             port=app.config['DB_PORT']
         )
         cursor = conn.cursor()
 
-        # Forzar codificación UTF-8
-        cursor.execute("SET client_encoding TO 'UTF8';")
-
-        # Obtener id_cliente desde JWT
+        # Reemplazo de user_id = 1
         user_id = get_jwt_identity()
         cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
         id_cliente_result = cursor.fetchone()
@@ -1880,22 +1875,6 @@ def get_monthly_performance():
         year = request.args.get('year', type=int, default=2025)
         month = request.args.get('month', type=int, default=2)  # Febrero por defecto
         status = request.args.get('status', default='Activo', type=str)
-
-        # Obtener cutoff desde la tabla de configuraciones
-        cursor.execute("""
-            SELECT cutoff_year, cutoff_month 
-            FROM configuraciones 
-            WHERE id_cliente = %s
-        """, (id_cliente,))
-        cutoff_result = cursor.fetchone()
-        if not cutoff_result:
-            cutoff_year, cutoff_month = 2025, 2  # Valores por defecto si no hay configuración
-        else:
-            cutoff_year, cutoff_month = cutoff_result
-
-        # Determinar qué tabla usar
-        use_hora = year > cutoff_year or (year == cutoff_year and month > cutoff_month)
-        sales_table = 'ventahistoricahora' if use_hora else 'ventahistorica'
 
         # Obtener PDVs según estatus
         pdv_query = "SELECT PDV FROM PuntosDeVenta WHERE IdCliente = %s"
@@ -1915,10 +1894,10 @@ def get_monthly_performance():
         cursor.execute(budget_query, (id_cliente, year, month))
         budget_data = dict(cursor.fetchall())
 
-        # Obtener ventas acumuladas del mes actual
-        sales_query = f"""
+        # Obtener ventas acumuladas del mes actual desde ventahistorica
+        sales_query = """
             SELECT pdv, SUM(venta) as venta_acum
-            FROM {sales_table}
+            FROM ventahistorica
             WHERE idcliente = %s AND año = %s AND mes = %s
             GROUP BY pdv
         """
@@ -1952,11 +1931,6 @@ def get_monthly_performance():
         current_day = 16  # Dado que usas 16 de marzo como referencia
 
         for pdv in all_pdvs:
-            # Forzar codificación UTF-8 en pdv
-            pdv_clean = pdv.encode('utf-8').decode('utf-8')
-            if any(ord(c) > 127 for c in pdv_clean):
-                logger.warning(f"Caracteres no-ASCII en pdv: {pdv_clean}")
-
             venta_acum = round(float(sales_data.get(pdv, 0)), 0)
             presupuesto = round(float(budget_data.get(pdv, 0)), 0)
             venta_prev = round(float(prev_sales_data.get(pdv, 0)), 0)
@@ -1978,7 +1952,7 @@ def get_monthly_performance():
             else:
                 cump_icon = '❌'
 
-            # Saldo para cumplir
+            # Saldo para cumplir (ajustado para coincidir con Excel)
             saldo = round(venta_proy - presupuesto, 0)
 
             # Crecimiento
@@ -1987,7 +1961,7 @@ def get_monthly_performance():
 
             # Agregar fila
             result.append({
-                'pdv': pdv_clean,
+                'pdv': pdv,
                 'venta_acum': venta_acum,
                 'venta_proy': venta_proy,
                 'presupuesto': presupuesto,
