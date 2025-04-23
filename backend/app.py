@@ -1862,7 +1862,7 @@ def get_monthly_performance():
         )
         cursor = conn.cursor()
 
-        # Reemplazo de user_id = 1
+        # Obtener id_cliente
         user_id = get_jwt_identity()
         cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
         id_cliente_result = cursor.fetchone()
@@ -1870,6 +1870,9 @@ def get_monthly_performance():
             conn.close()
             return jsonify({"error": "Usuario no encontrado"}), 404
         id_cliente = id_cliente_result[0]
+
+        # Obtener mes de corte
+        cutoff_year, cutoff_month = get_cutoff(id_cliente)
 
         # Parámetros de la solicitud
         year = request.args.get('year', type=int, default=2025)
@@ -1894,26 +1897,58 @@ def get_monthly_performance():
         cursor.execute(budget_query, (id_cliente, year, month))
         budget_data = dict(cursor.fetchall())
 
-        # Obtener ventas acumuladas del mes actual desde ventahistorica
-        sales_query = """
-            SELECT pdv, SUM(venta) as venta_acum
-            FROM ventahistorica
-            WHERE idcliente = %s AND año = %s AND mes = %s
-            GROUP BY pdv
-        """
-        cursor.execute(sales_query, (id_cliente, year, month))
-        sales_data = dict(cursor.fetchall())
+        # Determinar fuente de datos según el mes de corte
+        sales_data = {}
+        if year < cutoff_year or (year == cutoff_year and month <= cutoff_month):
+            # Usar ventahistorica para meses anteriores o iguales al corte
+            sales_query = """
+                SELECT pdv, SUM(venta) as venta_acum
+                FROM ventahistorica
+                WHERE idcliente = %s AND año = %s AND mes = %s
+                GROUP BY pdv
+            """
+            cursor.execute(sales_query, (id_cliente, year, month))
+            sales_data = dict(cursor.fetchall())
+        else:
+            # Usar ventahistoricahora para meses posteriores al corte
+            sales_query = """
+                SELECT p.PDV, SUM(v.importe) as venta_acum
+                FROM ventahistoricahora v
+                JOIN PuntosDeVenta p ON v.almacen = p.data2 AND p.idcliente = %s
+                WHERE v.idcliente = %s
+                AND EXTRACT(YEAR FROM v.fecha) = %s
+                AND EXTRACT(MONTH FROM v.fecha) = %s
+                GROUP BY p.PDV
+            """
+            cursor.execute(sales_query, (id_cliente, id_cliente, year, month))
+            sales_data = dict(cursor.fetchall())
 
-        # Obtener ventas del año anterior desde ventahistorica
+        # Obtener ventas del año anterior
         prev_year = year - 1
-        prev_sales_query = """
-            SELECT pdv, SUM(venta) as venta_prev
-            FROM ventahistorica
-            WHERE idcliente = %s AND año = %s AND mes = %s
-            GROUP BY pdv
-        """
-        cursor.execute(prev_sales_query, (id_cliente, prev_year, month))
-        prev_sales_data = dict(cursor.fetchall())
+        prev_sales_data = {}
+        if prev_year < cutoff_year or (prev_year == cutoff_year and month <= cutoff_month):
+            # Usar ventahistorica para el año anterior si es antes o igual al corte
+            prev_sales_query = """
+                SELECT pdv, SUM(venta) as venta_prev
+                FROM ventahistorica
+                WHERE idcliente = %s AND año = %s AND mes = %s
+                GROUP BY pdv
+            """
+            cursor.execute(prev_sales_query, (id_cliente, prev_year, month))
+            prev_sales_data = dict(cursor.fetchall())
+        else:
+            # Usar ventahistoricahora para el año anterior si es posterior al corte
+            prev_sales_query = """
+                SELECT p.PDV, SUM(v.importe) as venta_prev
+                FROM ventahistoricahora v
+                JOIN PuntosDeVenta p ON v.almacen = p.data2 AND p.idcliente = %s
+                WHERE v.idcliente = %s
+                AND EXTRACT(YEAR FROM v.fecha) = %s
+                AND EXTRACT(MONTH FROM v.fecha) = %s
+                GROUP BY p.PDV
+            """
+            cursor.execute(prev_sales_query, (id_cliente, id_cliente, prev_year, month))
+            prev_sales_data = dict(cursor.fetchall())
 
         # Calcular métricas
         result = []
@@ -1922,21 +1957,21 @@ def get_monthly_performance():
             'saldo': 0, 'venta_prev': 0, 'crecimiento_valor': 0
         }
 
-        # Determinar días del mes según el mes seleccionado
+        # Determinar días del mes y día actual
+        from datetime import datetime
         days_in_month = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
-        # Ajustar para años bisiestos
         if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
             days_in_month[2] = 29
-        days = days_in_month.get(month, 30)  # Default a 30 si no está definido
-        current_day = 16  # Dado que usas 16 de marzo como referencia
+        days = days_in_month.get(month, 30)
+        current_day = min(datetime.now().day, days)  # Usar día actual, limitado por días del mes
 
         for pdv in all_pdvs:
             venta_acum = round(float(sales_data.get(pdv, 0)), 0)
             presupuesto = round(float(budget_data.get(pdv, 0)), 0)
             venta_prev = round(float(prev_sales_data.get(pdv, 0)), 0)
 
-            # Venta proyectada (simplificamos como acumulada por ahora)
-            venta_proy = venta_acum
+            # Venta proyectada (proporcional al día actual)
+            venta_proy = round(venta_acum * (days / current_day), 0) if current_day > 0 else venta_acum
 
             # Cumplimiento a la fecha
             cump_fecha = round(presupuesto * (current_day / days), 0)
@@ -1945,19 +1980,14 @@ def get_monthly_performance():
             cump_percent = round((venta_proy / presupuesto * 100), 2) if presupuesto > 0 else 0
 
             # Indicador visual
-            if cump_percent >= 90:
-                cump_icon = '✅'
-            elif cump_percent >= 80:
-                cump_icon = '⚠️'
-            else:
-                cump_icon = '❌'
+            cump_icon = '✅' if cump_percent >= 90 else '⚠️' if cump_percent >= 80 else '❌'
 
-            # Saldo para cumplir (ajustado para coincidir con Excel)
-            saldo = round(venta_proy - presupuesto, 0)
+            # Saldo para cumplir
+            saldo = round(presupuesto - venta_acum, 0)
 
             # Crecimiento
-            crecimiento_percent = round(((venta_proy - venta_prev) / venta_prev * 100), 2) if venta_prev > 0 else 0
-            crecimiento_valor = round(venta_proy - venta_prev, 0)
+            crecimiento_percent = round(((venta_acum - venta_prev) / venta_prev * 100), 2) if venta_prev > 0 else 0
+            crecimiento_valor = round(venta_acum - venta_prev, 0)
 
             # Agregar fila
             result.append({
@@ -1988,7 +2018,7 @@ def get_monthly_performance():
         totals['cump_icon'] = '✅' if totals['cump_percent'] >= 90 else '⚠️' if totals['cump_percent'] >= 80 else '❌'
 
         # Calcular crecimiento total
-        totals['crecimiento_percent'] = round(((totals['venta_proy'] - totals['venta_prev']) / totals['venta_prev'] * 100), 2) if totals['venta_prev'] > 0 else 0
+        totals['crecimiento_percent'] = round(((totals['venta_acum'] - totals['venta_prev']) / totals['venta_prev'] * 100), 2) if totals['venta_prev'] > 0 else 0
 
         response = {
             'year': year,
@@ -2001,6 +2031,8 @@ def get_monthly_performance():
         return jsonify(response), 200
 
     except Exception as e:
+        if 'conn' in locals():
+            conn.close()
         logger.error(f"Error en monthly-performance: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
