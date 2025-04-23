@@ -1862,6 +1862,7 @@ def get_monthly_performance():
         )
         cursor = conn.cursor()
 
+        # Obtener id_cliente
         user_id = get_jwt_identity()
         cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
         id_cliente_result = cursor.fetchone()
@@ -1870,11 +1871,15 @@ def get_monthly_performance():
             return jsonify({"error": "Usuario no encontrado"}), 404
         id_cliente = id_cliente_result[0]
 
-        cutoff_year, cutoff_month = get_cutoff(id_cliente)
+        # Parámetros de la solicitud
         year = request.args.get('year', type=int, default=2025)
         month = request.args.get('month', type=int, default=2)
         status = request.args.get('status', default='Activo', type=str)
 
+        # Determinar mes de corte
+        cutoff_year, cutoff_month = get_cutoff(id_cliente)  # Asumimos que existe
+
+        # Obtener PDVs según estatus
         pdv_query = "SELECT PDV FROM PuntosDeVenta WHERE IdCliente = %s"
         params = [id_cliente]
         if status != 'Todos':
@@ -1883,11 +1888,16 @@ def get_monthly_performance():
         cursor.execute(pdv_query, params)
         all_pdvs = [row[0] for row in cursor.fetchall()]
 
+        # Obtener presupuesto
         budget_query = """
             SELECT pdv, presupuestoventa
             FROM presupuesto
             WHERE idcliente = %s AND año = %s AND mes = %s
         """
+        cursor.execute(budget_query, (id_cliente, year, month))
+        budget_data = dict(cursor.fetchall())
+
+        # Determinar fuente de datos
         if year < cutoff_year or (year == cutoff_year and month <= cutoff_month):
             sales_query = """
                 SELECT pdv, SUM(venta) as venta_acum
@@ -1907,7 +1917,10 @@ def get_monthly_performance():
                 GROUP BY p.PDV
             """
             params = (id_cliente, id_cliente, year, month)
+        cursor.execute(sales_query, params)
+        sales_data = dict(cursor.fetchall())
 
+        # Obtener ventas del año anterior
         prev_year = year - 1
         prev_sales_query = """
             SELECT pdv, SUM(venta) as venta_prev
@@ -1915,38 +1928,46 @@ def get_monthly_performance():
             WHERE idcliente = %s AND año = %s AND mes = %s
             GROUP BY pdv
         """
-        cursor.execute(sales_query, params)
-        sales_data = dict(cursor.fetchall())
-
-        cursor.execute(budget_query, (id_cliente, year, month))
-        budget_data = dict(cursor.fetchall())
-
         cursor.execute(prev_sales_query, (id_cliente, prev_year, month))
         prev_sales_data = dict(cursor.fetchall())
 
-        from datetime import datetime
+        # Calcular métricas
+        result = []
+        totals = {
+            'venta_acum': 0, 'venta_proy': 0, 'presupuesto': 0,
+            'saldo': 0, 'venta_prev': 0, 'crecimiento_valor': 0
+        }
+
+        # Días del mes
         days_in_month = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
         if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
             days_in_month[2] = 29
         days = days_in_month.get(month, 30)
         current_day = 16  # Fijo para coincidir con MonthlySalesPerformance.vue
 
-        result = []
-        totals = {
-            'venta_acum': 0, 'venta_proy': 0, 'presupuesto': 0, 'cump_fecha': 0,
-            'saldo': 0, 'venta_prev': 0, 'crecimiento_valor': 0
-        }
+        projection_factor = days / current_day if current_day > 0 else 1
 
         for pdv in all_pdvs:
             venta_acum = round(float(sales_data.get(pdv, 0)), 0)
             presupuesto = round(float(budget_data.get(pdv, 0)), 0)
             venta_prev = round(float(prev_sales_data.get(pdv, 0)), 0)
 
-            venta_proy = round(venta_acum * (days / current_day), 0) if current_day > 0 else venta_acum
-            cump_fecha = round((venta_acum / presupuesto * (days / current_day) * 100), 2) if presupuesto > 0 else 0
+            # Venta proyectada
+            venta_proy = round(venta_acum * projection_factor, 0)
+
+            # Cumplimiento a la fecha
+            cump_fecha = round((venta_acum / presupuesto * projection_factor * 100), 2) if presupuesto > 0 else 0
+
+            # Porcentaje de cumplimiento
             cump_percent = round((venta_proy / presupuesto * 100), 2) if presupuesto > 0 else 0
+
+            # Indicador visual
             cump_icon = '✅' if cump_percent >= 90 else '⚠️' if cump_percent >= 80 else '❌'
+
+            # Saldo para cumplir
             saldo = round(venta_proy - presupuesto, 0)
+
+            # Crecimiento
             crecimiento_percent = round(((venta_acum - venta_prev) / venta_prev * 100), 2) if venta_prev > 0 else 0
             crecimiento_valor = round(venta_acum - venta_prev, 0)
 
@@ -1967,12 +1988,13 @@ def get_monthly_performance():
             totals['venta_acum'] += venta_acum
             totals['venta_proy'] += venta_proy
             totals['presupuesto'] += presupuesto
-            totals['cump_fecha'] += cump_fecha
             totals['saldo'] += saldo
             totals['venta_prev'] += venta_prev
             totals['crecimiento_valor'] += crecimiento_valor
 
+        # Calcular totales
         totals['cump_percent'] = round((totals['venta_proy'] / totals['presupuesto'] * 100), 2) if totals['presupuesto'] > 0 else 0
+        totals['cump_fecha'] = round((totals['venta_acum'] / totals['presupuesto'] * projection_factor * 100), 2) if totals['presupuesto'] > 0 else 0
         totals['cump_icon'] = '✅' if totals['cump_percent'] >= 90 else '⚠️' if totals['cump_percent'] >= 80 else '❌'
         totals['crecimiento_percent'] = round(((totals['venta_acum'] - totals['venta_prev']) / totals['venta_prev'] * 100), 2) if totals['venta_prev'] > 0 else 0
 
