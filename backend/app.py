@@ -1856,13 +1856,18 @@ def delete_budget_sales():
 def get_monthly_performance():
     try:
         conn = psycopg2.connect(
-            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
-            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
+            dbname=app.config['DB_NAME'], 
+            user=app.config['DB_USER'],
+            password=app.config['DB_PASSWORD'], 
+            host=app.config['DB_HOST'],
             port=app.config['DB_PORT']
         )
         cursor = conn.cursor()
 
-        # Reemplazo de user_id = 1
+        # Forzar codificación UTF-8
+        cursor.execute("SET client_encoding TO 'UTF8';")
+
+        # Obtener id_cliente desde JWT
         user_id = get_jwt_identity()
         cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
         id_cliente_result = cursor.fetchone()
@@ -1876,6 +1881,29 @@ def get_monthly_performance():
         month = request.args.get('month', type=int, default=2)  # Febrero por defecto
         status = request.args.get('status', default='Activo', type=str)
 
+        # Obtener cutoff desde la tabla de configuraciones
+        try:
+            cursor.execute("""
+                SELECT cutoff_year, cutoff_month 
+                FROM configuraciones 
+                WHERE id_cliente = %s
+            """, (id_cliente,))
+            cutoff_result = cursor.fetchone()
+            if not cutoff_result:
+                logger.warning(f"No se encontró configuración para id_cliente={id_cliente}. Usando valores por defecto.")
+                cutoff_year, cutoff_month = 2025, 2  # Valores por defecto
+            else:
+                cutoff_year, cutoff_month = cutoff_result
+        except psycopg2.Error as e:
+            logger.error(f"Error al consultar configuraciones: {str(e)}")
+            cutoff_year, cutoff_month = 2025, 2  # Fallback si la tabla no existe
+            cursor.execute("ROLLBACK;")  # Revertir cualquier transacción fallida
+            cursor.execute("SET client_encoding TO 'UTF8';")  # Restaurar codificación
+
+        # Determinar qué tabla usar
+        use_hora = year > cutoff_year or (year == cutoff_year and month > cutoff_month)
+        sales_table = 'ventahistoricahora' if use_hora else 'ventahistorica'
+
         # Obtener PDVs según estatus
         pdv_query = "SELECT PDV FROM PuntosDeVenta WHERE IdCliente = %s"
         params = [id_cliente]
@@ -1884,6 +1912,22 @@ def get_monthly_performance():
             params.append(status)
         cursor.execute(pdv_query, params)
         all_pdvs = [row[0] for row in cursor.fetchall()]
+
+        # Si no hay PDVs, devolver respuesta vacía pero válida
+        if not all_pdvs:
+            logger.warning(f"No se encontraron PDVs para id_cliente={id_cliente}, status={status}")
+            response = {
+                'year': year,
+                'month': month,
+                'data': [],
+                'totals': {
+                    'venta_acum': 0, 'venta_proy': 0, 'presupuesto': 0, 'cump_fecha': 0,
+                    'saldo': 0, 'venta_prev': 0, 'crecimiento_valor': 0, 'cump_percent': 0,
+                    'cump_icon': '❌', 'crecimiento_percent': 0
+                }
+            }
+            conn.close()
+            return jsonify(response), 200
 
         # Obtener presupuesto
         budget_query = """
@@ -1894,10 +1938,10 @@ def get_monthly_performance():
         cursor.execute(budget_query, (id_cliente, year, month))
         budget_data = dict(cursor.fetchall())
 
-        # Obtener ventas acumuladas del mes actual desde ventahistorica
-        sales_query = """
+        # Obtener ventas acumuladas del mes actual
+        sales_query = f"""
             SELECT pdv, SUM(venta) as venta_acum
-            FROM ventahistorica
+            FROM {sales_table}
             WHERE idcliente = %s AND año = %s AND mes = %s
             GROUP BY pdv
         """
@@ -1924,18 +1968,26 @@ def get_monthly_performance():
 
         # Determinar días del mes según el mes seleccionado
         days_in_month = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
-        # Ajustar para años bisiestos
         if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
             days_in_month[2] = 29
-        days = days_in_month.get(month, 30)  # Default a 30 si no está definido
-        current_day = 16  # Dado que usas 16 de marzo como referencia
+        days = days_in_month.get(month, 30)
+        current_day = 16
 
         for pdv in all_pdvs:
+            # Limpiar pdv para evitar errores de codificación
+            try:
+                pdv_clean = pdv.encode('utf-8').decode('utf-8')
+                if any(ord(c) > 127 for c in pdv_clean):
+                    logger.warning(f"Caracteres no-ASCII en pdv: {pdv_clean}")
+            except UnicodeDecodeError:
+                logger.error(f"Error de codificación en pdv: {pdv}. Limpiando...")
+                pdv_clean = ''.join(c for c in pdv if ord(c) < 128)
+
             venta_acum = round(float(sales_data.get(pdv, 0)), 0)
             presupuesto = round(float(budget_data.get(pdv, 0)), 0)
             venta_prev = round(float(prev_sales_data.get(pdv, 0)), 0)
 
-            # Venta proyectada (simplificamos como acumulada por ahora)
+            # Venta proyectada (manteniendo lógica original)
             venta_proy = venta_acum
 
             # Cumplimiento a la fecha
@@ -1952,7 +2004,7 @@ def get_monthly_performance():
             else:
                 cump_icon = '❌'
 
-            # Saldo para cumplir (ajustado para coincidir con Excel)
+            # Saldo para cumplir
             saldo = round(venta_proy - presupuesto, 0)
 
             # Crecimiento
@@ -1961,7 +2013,7 @@ def get_monthly_performance():
 
             # Agregar fila
             result.append({
-                'pdv': pdv,
+                'pdv': pdv_clean,
                 'venta_acum': venta_acum,
                 'venta_proy': venta_proy,
                 'presupuesto': presupuesto,
@@ -2002,6 +2054,8 @@ def get_monthly_performance():
 
     except Exception as e:
         logger.error(f"Error en monthly-performance: {str(e)}")
+        if 'conn' in locals():
+            conn.close()
         return jsonify({"error": str(e)}), 500
 
 
