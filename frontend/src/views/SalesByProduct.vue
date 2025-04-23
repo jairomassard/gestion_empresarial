@@ -130,7 +130,8 @@ export default {
     const currentDate = new Date();
     const currentMonth = currentDate.getMonth() + 1;
     const currentYear = currentDate.getFullYear();
-    const month = ref(currentMonth);
+    //const month = ref(currentMonth);
+    const month = ref(0);
 
     const months = ref([
       { num: 0, name: 'Todos los meses' }, // Añadir opción para todos los meses
