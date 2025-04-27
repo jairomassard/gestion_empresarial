@@ -1979,11 +1979,17 @@ def get_monthly_performance():
                 pdv_clean = ''.join(c for c in pdv if ord(c) < 128)
             sales_data[pdv_clean] = row[1]
 
-        # Mapear ventas de almacen a pdv usando data2
+        # Mapear ventas según la tabla usada
         mapped_sales_data = {}
-        for pdv in all_pdvs:
-            data2 = next((k for k, v in data2_to_pdv.items() if v == pdv), pdv)
-            mapped_sales_data[pdv] = sales_data.get(data2, 0)
+        if use_hora:
+            # Para ventahistoricahora, mapear almacen a pdv usando data2
+            for pdv in all_pdvs:
+                data2 = next((k for k, v in data2_to_pdv.items() if v == pdv), pdv)
+                mapped_sales_data[pdv] = sales_data.get(data2, 0)
+        else:
+            # Para ventahistorica, usar pdv directamente
+            for pdv in all_pdvs:
+                mapped_sales_data[pdv] = sales_data.get(pdv, 0)
 
         # Obtener ventas del año anterior desde ventahistorica
         prev_year = year - 1
