@@ -1875,43 +1875,67 @@ def get_monthly_performance():
             conn.close()
             return jsonify({"error": "Usuario no encontrado"}), 404
         id_cliente = id_cliente_result[0]
+        logger.info(f"Usuario autenticado: id_cliente={id_cliente}")
 
         # Parámetros de la solicitud
         year = request.args.get('year', type=int, default=2025)
-        month = request.args.get('month', type=int, default=2)  # Febrero por defecto
+        month = request.args.get('month', type=int, default=2)
         status = request.args.get('status', default='Activo', type=str)
+        logger.info(f"Parámetros: year={year}, month={month}, status={status}")
 
         # Obtener cutoff desde la tabla de configuraciones
         try:
             cursor.execute("""
-                SELECT cutoff_year, cutoff_month 
+                SELECT cutoffyear, cutoffmonth 
                 FROM configuraciones 
-                WHERE id_cliente = %s
+                WHERE idcliente = %s
             """, (id_cliente,))
             cutoff_result = cursor.fetchone()
             if not cutoff_result:
                 logger.warning(f"No se encontró configuración para id_cliente={id_cliente}. Usando valores por defecto.")
-                cutoff_year, cutoff_month = 2025, 2  # Valores por defecto
+                cutoff_year, cutoff_month = 2025, 2  # Hasta febrero 2025
             else:
                 cutoff_year, cutoff_month = cutoff_result
+                logger.info(f"Cutoff: year={cutoff_year}, month={cutoff_month}")
         except psycopg2.Error as e:
             logger.error(f"Error al consultar configuraciones: {str(e)}")
-            cutoff_year, cutoff_month = 2025, 2  # Fallback si la tabla no existe
-            cursor.execute("ROLLBACK;")  # Revertir cualquier transacción fallida
-            cursor.execute("SET client_encoding TO 'UTF8';")  # Restaurar codificación
+            cutoff_year, cutoff_month = 2025, 2
+            cursor.execute("ROLLBACK;")
+            cursor.execute("SET client_encoding TO 'UTF8';")
 
         # Determinar qué tabla usar
         use_hora = year > cutoff_year or (year == cutoff_year and month > cutoff_month)
-        sales_table = 'ventahistoricahora' if use_hora else 'ventahistorica'
+        if use_hora:
+            logger.info("Usando ventahistoricahora")
+            sales_query = """
+                SELECT almacen, SUM(importe) as venta_acum
+                FROM ventahistoricahora
+                WHERE idcliente = %s 
+                    AND EXTRACT(YEAR FROM fecha) = %s 
+                    AND EXTRACT(MONTH FROM fecha) = %s
+                GROUP BY almacen
+            """
+        else:
+            logger.info("Usando ventahistorica")
+            sales_query = """
+                SELECT pdv, SUM(venta) as venta_acum
+                FROM ventahistorica
+                WHERE idcliente = %s AND año = %s AND mes = %s
+                GROUP BY pdv
+            """
 
-        # Obtener PDVs según estatus
-        pdv_query = "SELECT PDV FROM PuntosDeVenta WHERE IdCliente = %s"
+        # Obtener PDVs según estatus y crear mapeo data2 -> pdv
+        pdv_query = "SELECT pdv, data2 FROM PuntosDeVenta WHERE IdCliente = %s"
         params = [id_cliente]
         if status != 'Todos':
             pdv_query += " AND Estado = %s"
             params.append(status)
         cursor.execute(pdv_query, params)
-        all_pdvs = [row[0] for row in cursor.fetchall()]
+        pdv_data = cursor.fetchall()
+        all_pdvs = [row[0] for row in pdv_data]
+        data2_to_pdv = {row[1]: row[0] for row in pdv_data}
+        logger.info(f"PDVs encontrados: {len(all_pdvs)}")
+        logger.info(f"Mapeo data2 a pdv: {data2_to_pdv}")
 
         # Si no hay PDVs, devolver respuesta vacía pero válida
         if not all_pdvs:
@@ -1937,16 +1961,29 @@ def get_monthly_performance():
         """
         cursor.execute(budget_query, (id_cliente, year, month))
         budget_data = dict(cursor.fetchall())
+        logger.info(f"Presupuestos encontrados: {len(budget_data)}")
 
         # Obtener ventas acumuladas del mes actual
-        sales_query = f"""
-            SELECT pdv, SUM(venta) as venta_acum
-            FROM {sales_table}
-            WHERE idcliente = %s AND año = %s AND mes = %s
-            GROUP BY pdv
-        """
         cursor.execute(sales_query, (id_cliente, year, month))
-        sales_data = dict(cursor.fetchall())
+        sales_data = {}
+        sales_rows = cursor.fetchall()
+        logger.info(f"Filas de ventas encontradas: {len(sales_rows)}")
+        for row in sales_rows:
+            pdv = row[0]
+            try:
+                pdv_clean = pdv.encode('utf-8').decode('utf-8')
+                if any(ord(c) > 127 for c in pdv_clean):
+                    logger.warning(f"Caracteres no-ASCII en almacen/pdv: {pdv_clean}")
+            except UnicodeDecodeError:
+                logger.error(f"Error de codificación en almacen/pdv: {pdv}. Limpiando...")
+                pdv_clean = ''.join(c for c in pdv if ord(c) < 128)
+            sales_data[pdv_clean] = row[1]
+
+        # Mapear ventas de almacen a pdv usando data2
+        mapped_sales_data = {}
+        for pdv in all_pdvs:
+            data2 = next((k for k, v in data2_to_pdv.items() if v == pdv), pdv)
+            mapped_sales_data[pdv] = sales_data.get(data2, 0)
 
         # Obtener ventas del año anterior desde ventahistorica
         prev_year = year - 1
@@ -1958,6 +1995,7 @@ def get_monthly_performance():
         """
         cursor.execute(prev_sales_query, (id_cliente, prev_year, month))
         prev_sales_data = dict(cursor.fetchall())
+        logger.info(f"Ventas del año anterior encontradas: {len(prev_sales_data)}")
 
         # Calcular métricas
         result = []
@@ -1974,20 +2012,11 @@ def get_monthly_performance():
         current_day = 16
 
         for pdv in all_pdvs:
-            # Limpiar pdv para evitar errores de codificación
-            try:
-                pdv_clean = pdv.encode('utf-8').decode('utf-8')
-                if any(ord(c) > 127 for c in pdv_clean):
-                    logger.warning(f"Caracteres no-ASCII en pdv: {pdv_clean}")
-            except UnicodeDecodeError:
-                logger.error(f"Error de codificación en pdv: {pdv}. Limpiando...")
-                pdv_clean = ''.join(c for c in pdv if ord(c) < 128)
-
-            venta_acum = round(float(sales_data.get(pdv, 0)), 0)
+            venta_acum = round(float(mapped_sales_data.get(pdv, 0)), 0)
             presupuesto = round(float(budget_data.get(pdv, 0)), 0)
             venta_prev = round(float(prev_sales_data.get(pdv, 0)), 0)
 
-            # Venta proyectada (manteniendo lógica original)
+            # Venta proyectada
             venta_proy = venta_acum
 
             # Cumplimiento a la fecha
@@ -2013,7 +2042,7 @@ def get_monthly_performance():
 
             # Agregar fila
             result.append({
-                'pdv': pdv_clean,
+                'pdv': pdv,
                 'venta_acum': venta_acum,
                 'venta_proy': venta_proy,
                 'presupuesto': presupuesto,
@@ -2049,6 +2078,7 @@ def get_monthly_performance():
             'totals': totals
         }
 
+        logger.info(f"Respuesta generada: {len(result)} filas, total_venta_acum={totals['venta_acum']}")
         conn.close()
         return jsonify(response), 200
 
