@@ -2133,6 +2133,142 @@ def get_available_years():
 
 
 
+@app.route('/dashboard/daily-sales', methods=['GET'])
+@jwt_required()
+def get_daily_sales():
+    try:
+        conn = psycopg2.connect(
+            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
+            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
+            port=app.config['DB_PORT']
+        )
+        cursor = conn.cursor()
+
+        # Reemplazo de user_id = 1 con autenticación
+        user_id = get_jwt_identity()
+        cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
+        id_cliente_result = cursor.fetchone()
+        if not id_cliente_result:
+            conn.close()
+            return jsonify({"error": "Usuario no encontrado"}), 404
+        id_cliente = id_cliente_result[0]
+
+        # Obtener parámetros de la solicitud
+        year = request.args.get('year', type=int, default=2025)
+        month = request.args.get('month', type=int, default=1)
+        status = request.args.get('status', default='Activo', type=str)
+        pdv = request.args.get('pdv', type=str)  # Nuevo parámetro para filtrar por PDV
+        day = request.args.get('day', type=int)  # Nuevo parámetro para filtrar por día
+
+        # Obtener PDVs según estatus
+        pdv_query = "SELECT PDV, data2 FROM PuntosDeVenta WHERE IdCliente = %s"
+        params = [id_cliente]
+        if status != 'Todos':
+            pdv_query += " AND Estado = %s"
+            params.append(status)
+        cursor.execute(pdv_query, params)
+        pdv_data = cursor.fetchall()
+        all_pdvs = [row[0] for row in pdv_data]
+        logger.info(f"PDVs obtenidos: {all_pdvs}")
+
+        # Crear un mapeo de nombres completos a nombres en ventahistoricahora (usando data2)
+        pdv_mapping = {row[0]: row[1] for row in pdv_data}
+        # Ajustar manualmente las diferencias conocidas
+        pdv_mapping['ACA - Caja Portal'] = 'Portal del Prado'
+        pdv_mapping['AQA - Caja la Castellana'] = 'La Castellana'
+        logger.info(f"Mapeo de PDVs: {pdv_mapping}")
+
+        # Obtener ventas diarias desde ventahistoricahora
+        sales_query = """
+            SELECT DATE(vh.fecha) as fecha, vh.almacen as pdv, SUM(vh.importe) as venta
+            FROM ventahistoricahora vh
+            WHERE vh.idcliente = %s
+            AND EXTRACT(YEAR FROM vh.fecha) = %s
+            AND EXTRACT(MONTH FROM vh.fecha) = %s
+        """
+        params = [id_cliente, year, month]
+
+        # Filtrar por PDV si se especifica
+        if pdv and pdv != 'Todos':
+            short_name = pdv_mapping.get(pdv, pdv)
+            sales_query += " AND vh.almacen = %s"
+            params.append(short_name)
+
+        # Filtrar por día si se especifica
+        if day and day != 'Todos':
+            sales_query += " AND EXTRACT(DAY FROM vh.fecha) = %s"
+            params.append(day)
+
+        sales_query += " GROUP BY DATE(vh.fecha), vh.almacen ORDER BY DATE(vh.fecha), vh.almacen"
+        cursor.execute(sales_query, params)
+        sales_data = cursor.fetchall()
+        logger.info(f"Datos de ventahistoricahora: {sales_data}")
+
+        # Obtener los días del mes
+        days_in_month = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
+        if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+            days_in_month[2] = 29
+        num_days = days_in_month.get(month, 30)
+
+        # Crear una lista de fechas para el mes
+        start_date = datetime(year, month, 1)
+        if day and day != 'Todos':
+            dates = [datetime(year, month, day).strftime('%Y-%m-%d')]
+        else:
+            dates = [(start_date + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(num_days)]
+
+        # Estructurar los datos
+        result = []
+        totals_by_pdv = {pdv: 0 for pdv in all_pdvs}
+        totals_by_day = {date: 0 for date in dates}
+
+        for date in dates:
+            date_obj = datetime.strptime(date, '%Y-%m-%d')
+            day_name = date_obj.strftime('%A').lower()
+            day_names_es = {
+                'monday': 'lunes', 'tuesday': 'martes', 'wednesday': 'miércoles', 'thursday': 'jueves',
+                'friday': 'viernes', 'saturday': 'sábado', 'sunday': 'domingo'
+            }
+            day_name_es = day_names_es.get(day_name, day_name)
+            formatted_date = f"{day_name_es}, {date_obj.strftime('%d/%m/%Y')}"
+
+            row = {'date': formatted_date}
+            daily_total = 0
+
+            for pdv in all_pdvs:
+                short_name = pdv_mapping.get(pdv, pdv)
+                sale = next((s[2] for s in sales_data if s[0].strftime('%Y-%m-%d') == date and s[1] == short_name), 0)
+                row[pdv] = float(sale)
+                daily_total += float(sale)
+                totals_by_pdv[pdv] += float(sale)
+
+            row['total'] = daily_total
+            totals_by_day[date] = daily_total
+            result.append(row)
+
+        # Agregar fila de totales por PDV
+        totals_row = {'date': 'TOTALES'}
+        for pdv in all_pdvs:
+            totals_row[pdv] = totals_by_pdv[pdv]
+        totals_row['total'] = sum(totals_by_pdv.values())
+
+        response = {
+            'year': year,
+            'month': month,
+            'pdvs': all_pdvs,
+            'data': result,
+            'totals': totals_row
+        }
+
+        conn.close()
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error en daily-sales: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+
 @app.route('/dashboard/sales-by-time-slot', methods=['GET'])
 @jwt_required()
 def get_sales_by_time_slot():
