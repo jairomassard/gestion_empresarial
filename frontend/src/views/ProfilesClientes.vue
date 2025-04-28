@@ -103,9 +103,10 @@ export default {
       inventario_traslados: [],
       production_admin: [],
       production_reportes: [],
-      parametrizacion_puntos_de_venta: [], // Mantenido para compatibilidad
+      parametrizacion_puntos_de_venta: [],
       parametrizacion_perfiles: [],
       parametrizacion_usuarios: [],
+      parametrizacion_cutoff: [],
     });
     const errorMessage = ref('');
     const isEditing = ref(false);
@@ -172,6 +173,7 @@ export default {
         subsecciones: [
           { name: 'perfiles', displayName: 'Creación de Perfiles', permisos: ['editar'] },
           { name: 'usuarios', displayName: 'Creación de Usuarios', permisos: ['editar'] },
+          { name: 'cutoff', displayName: 'Configuración Mes de Corte historico (Cutoff)', permisos: ['editar'] },
         ],
       },
     ];
@@ -343,6 +345,7 @@ export default {
         parametrizacion_puntos_de_venta: [],
         parametrizacion_perfiles: [],
         parametrizacion_usuarios: [],
+        parametrizacion_cutoff: [],
       };
     };
 

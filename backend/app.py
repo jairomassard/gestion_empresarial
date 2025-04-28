@@ -8738,14 +8738,17 @@ def buscar_producto_compuesto():
         return jsonify({'error': 'Error al buscar producto compuesto'}), 500
 
 # Endpoint para obtener la configuración del mes de corte
+# Endpoint para obtener la configuración del mes de corte
 @app.route('/config/cutoff', methods=['GET'])
 @jwt_required()
 def get_cutoff_config():
     try:
         user_id = get_jwt_identity()
         conn = psycopg2.connect(
-            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
-            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
+            dbname=app.config['DB_NAME'], 
+            user=app.config['DB_USER'],
+            password=app.config['DB_PASSWORD'], 
+            host=app.config['DB_HOST'],
             port=app.config['DB_PORT']
         )
         cursor = conn.cursor()
@@ -8764,11 +8767,14 @@ def get_cutoff_config():
         conn.close()
         if result:
             return jsonify({"CutoffYear": result[0], "CutoffMonth": result[1]}), 200
-        return jsonify({"CutoffYear": null, "CutoffMonth": null}), 200
+        return jsonify({"CutoffYear": None, "CutoffMonth": None}), 200
     except Exception as e:
         logger.error(f"Error en get_cutoff_config: {str(e)}")
+        if 'conn' in locals():
+            conn.close()
         return jsonify({"error": str(e)}), 500
 
+# Endpoint para guardar la configuración del mes de corte
 @app.route('/config/cutoff', methods=['POST'])
 @jwt_required()
 def save_cutoff_config():
@@ -8786,8 +8792,10 @@ def save_cutoff_config():
 
         user_id = get_jwt_identity()
         conn = psycopg2.connect(
-            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
-            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
+            dbname=app.config['DB_NAME'], 
+            user=app.config['DB_USER'],
+            password=app.config['DB_PASSWORD'], 
+            host=app.config['DB_HOST'],
             port=app.config['DB_PORT']
         )
         cursor = conn.cursor()
@@ -8816,7 +8824,6 @@ def save_cutoff_config():
             conn.close()
         logger.error(f"Error en save_cutoff_config: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 
 
 #if __name__ == '__main__':

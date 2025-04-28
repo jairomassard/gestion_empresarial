@@ -107,6 +107,7 @@ export default {
       cargue_puntos_de_venta: [],
       parametrizacion_perfiles: [],
       parametrizacion_usuarios: [],
+      parametrizacion_cutoff: [],
       inventario_consulta_inventario: [],
       inventario_consulta: [],
       inventario_kardex: [],
@@ -162,6 +163,7 @@ export default {
         subsecciones: [
           { name: 'perfiles', displayName: 'Creación de Perfiles', permisos: ['editar'] },
           { name: 'usuarios', displayName: 'Creación de Usuarios', permisos: ['editar'] },
+          { name: 'cutoff', displayName: 'Configuración Mes de Corte historico (Cutoff)', permisos: ['editar'] },
         ],
       },
       {
@@ -380,6 +382,7 @@ export default {
         cargue_puntos_de_venta: [],
         parametrizacion_perfiles: [],
         parametrizacion_usuarios: [],
+        parametrizacion_cutoff: [],
         inventario_consulta_inventario: [],
         inventario_consulta: [],
         inventario_kardex: [],
