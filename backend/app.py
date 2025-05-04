@@ -94,8 +94,12 @@ def unauthorized_callback(error):
 #CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
 
-# Configurar localización para es_CO
-locale.setlocale(locale.LC_ALL, 'es_CO.UTF-8')
+# Configurar localización
+try:
+    locale.setlocale(locale.LC_ALL, 'es_CO.UTF-8')
+except locale.Error:
+    logger.warning("Locale es_CO.UTF-8 no disponible, usando C.UTF-8")
+    locale.setlocale(locale.LC_ALL, 'C.UTF-8')
 
 def get_db_connection():
     conn = psycopg2.connect(
@@ -107,6 +111,18 @@ def get_db_connection():
     )
     return conn
 
+
+def normalize_text(text):
+    """Normaliza texto asegurando compatibilidad con UTF-8 y eliminando espacios."""
+    if not isinstance(text, str):
+        text = str(text)
+    try:
+        text = unicodedata.normalize('NFC', text)
+        text = text.encode('utf-8', errors='replace').decode('utf-8')
+        return text.strip()
+    except Exception as e:
+        logger.error(f"Error normalizando texto: {text}, error: {str(e)}")
+        return text.replace('\ufffd', '').strip()
 
 
 def obtener_hora_utc():
@@ -1813,11 +1829,9 @@ def upload_sales():
 
         logger.debug(f"Iniciando upload_sales: idcliente={idcliente}, usuario_id={usuario_id}")
 
-        # Verificar configuraciones
         config = Configuraciones.query.filter_by(idcliente=idcliente).first()
         sincronizar = config.sync_analisis_inventario if config else False
 
-        # Validar archivo
         if 'file' not in request.files:
             logger.error("No file provided")
             return jsonify({"error": "No file provided"}), 400
@@ -1826,23 +1840,17 @@ def upload_sales():
             logger.error("File must be an Excel (.xlsx)")
             return jsonify({"error": "File must be an Excel (.xlsx)"}), 400
 
-        # Leer Excel
-        df = pd.read_excel(file, usecols=[
+        df = pd.read_excel(file, engine='openpyxl', usecols=[
             "Fecha", "Rangos Horarios", "Almacén", "Cliente",
             "Nombre Vendedor", "Descripción", "Uds.", "Importe"
         ])
 
-        # Normalizar columnas
         df.columns = ["fecha", "rango_horarios", "almacen", "cliente",
                       "vendedor", "descripcion", "uds", "importe"]
 
-        # Normalizar texto para preservar caracteres UTF-8
-        for col in ["rango_horarios", "vendedor", "descripcion"]:
-            df[col] = df[col].astype(str).apply(
-                lambda x: x.encode('utf-8').decode('utf-8').strip()
-            )
+        for col in ["rango_horarios", "vendedor", "descripcion", "almacen"]:
+            df[col] = df[col].apply(normalize_text)
 
-        # Procesar datos
         df["fecha"] = pd.to_datetime(df["fecha"], errors='coerce')
         df["uds"] = pd.to_numeric(df["uds"], errors='coerce').fillna(0).astype(float)
         df["importe"] = pd.to_numeric(df["importe"], errors='coerce').fillna(0.0)
@@ -1853,7 +1861,6 @@ def upload_sales():
             logger.error("No se encontraron registros válidos en el archivo")
             return jsonify({"error": "No se encontraron registros válidos en el archivo"}), 400
 
-        # Validar almacenes
         conn = psycopg2.connect(
             dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
             password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
@@ -1864,9 +1871,6 @@ def upload_sales():
         cursor.execute("SELECT data2 FROM puntosdeventa WHERE idcliente = %s AND estado = 'Activo'", (idcliente,))
         valid_almacenes = set(row[0].strip() for row in cursor.fetchall())
 
-        # Normalizar los nombres de almacenes en el DataFrame
-        df["almacen"] = df["almacen"].astype(str).str.strip()
-
         logger.debug(f"Almacenes en Excel: {set(df['almacen'].unique())}")
         logger.debug(f"Almacenes válidos en puntosdeventa: {valid_almacenes}")
 
@@ -1876,12 +1880,11 @@ def upload_sales():
             logger.error(f"Almacenes no válidos: {invalid_almacenes}")
             return jsonify({"error": f"Almacenes no válidos: {invalid_almacenes}. Almacenes esperados: {valid_almacenes}"}), 400
 
-        # Validar productos solo si sincronizar=True
         productos_dict = {}
         if sincronizar:
             productos = Producto.query.filter_by(idcliente=idcliente).all()
             for p in productos:
-                nombre = p.nombre.strip()
+                nombre = normalize_text(p.nombre)
                 if nombre in productos_dict:
                     logger.warning(f"Nombre de producto duplicado: {nombre}, producto_id={p.id}, existente_id={productos_dict[nombre].id}")
                 productos_dict[nombre] = p
@@ -1892,7 +1895,6 @@ def upload_sales():
                 logger.error(f"Productos no válidos: {invalid_productos}")
                 return jsonify({"error": f"Productos no válidos: {invalid_productos}"}), 400
 
-        # Validar mes de corte
         cutoff_year, cutoff_month = get_cutoff(idcliente)
         invalid_rows = df[
             (df["fecha"].dt.year < cutoff_year) |
@@ -1903,7 +1905,6 @@ def upload_sales():
             logger.error(f"Datos anteriores o iguales al mes de corte ({cutoff_year}-{cutoff_month}) no permitidos")
             return jsonify({"error": f"Datos anteriores o iguales al mes de corte ({cutoff_year}-{cutoff_month}) no permitidos"}), 400
 
-        # Preparar datos para ventahistoricahora
         data_to_insert = []
         with no_autoflush(db.session):
             for _, row in df.iterrows():
@@ -1933,7 +1934,6 @@ def upload_sales():
             logger.info("No hay ventas para procesar")
             return jsonify({"message": "No hay ventas para procesar"}), 200
 
-        # Insertar en ventahistoricahora
         query = """
             INSERT INTO ventahistoricahora (idcliente, fecha, rango_horarios, almacen,
                                             cliente, vendedor, descripcion, uds, importe)
@@ -1941,7 +1941,6 @@ def upload_sales():
         """
         execute_values(cursor, query, data_to_insert)
 
-        # Actualizar ventahistorica
         years_months = df.groupby([df["fecha"].dt.year, df["fecha"].dt.month]).size().index
         for year, month in years_months:
             cursor.execute("""
@@ -1961,7 +1960,6 @@ def upload_sales():
                 SET venta = EXCLUDED.venta
             """, (idcliente, idcliente, year, month))
 
-        # Procesar inventario si sincronizar=True
         if sincronizar:
             with no_autoflush(db.session):
                 for _, row in df.iterrows():
@@ -2006,7 +2004,8 @@ def upload_sales():
                             skip_inventory_check=True
                         )
                     else:
-                        if not verificar_inventario(producto.id, bodega.id, cantidad, idcliente)[0]:
+                        has_inventory, _ = verificar_inventario(producto.id, bodega.id, cantidad, idcliente)
+                        if not has_inventory:
                             conn.rollback()
                             conn.close()
                             logger.error(f"No hay suficiente inventario para producto_id={producto.id} en bodega_id={bodega.id}")
@@ -2020,7 +2019,6 @@ def upload_sales():
                             fecha=fecha
                         )
 
-        # Confirmar transacciones
         conn.commit()
         conn.close()
         db.session.commit()
