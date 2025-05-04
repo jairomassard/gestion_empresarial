@@ -4,7 +4,8 @@
 
     <section class="form-section">
       <div class="form-actions" style="justify-content: flex-end">
-        <button @click="limpiarPagina" class="btn btn-warning">Limpiar Página</button>
+          <button @click="limpiarPagina" class="btn btn-warning">Limpiar Página</button>
+          
       </div>
 
       <!-- Filtros de búsqueda -->
@@ -61,7 +62,7 @@
       </div>
       <div class="form-group">
         <label for="umbralAlerta">Umbral de Alerta (%):</label>
-        <input v-model.number="umbralAlerta" id="umbralAlerta" type="number" min="0" max="100" step="0.01" />
+        <input v-model.number="umbralAlerta" id="umbralAlerta" type="number" min="0" max="100" step="1" />
       </div>
     </section>
 
@@ -118,7 +119,7 @@
               <td>{{ producto.codigo }}</td>
               <td>{{ producto.nombre }}</td>
               <td>{{ producto.stock_minimo !== null ? producto.stock_minimo : '-' }}</td>
-              <td>{{ formatCantidad(producto.cantidad_total || 0) }}</td>
+              <td>{{ producto.cantidad_total || 0 }}</td>
               <td>
                 <span v-if="producto.stock_minimo !== null && producto.stock_minimo !== undefined">
                   <span v-if="Number(producto.cantidad_total) > Number(producto.stock_minimo) * (1 + Number(umbralAlerta) / 100)" class="estado verde">✔</span>
@@ -128,7 +129,7 @@
                 <span v-else>-</span>
               </td>
               <template v-for="bodega in bodegasMostradas" :key="bodega">
-                <td>{{ formatCantidad(producto.cantidades_por_bodega[bodega] || 0) }}</td>
+                <td>{{ producto.cantidades_por_bodega[bodega] || 0 }}</td>
                 <td>${{ formatCosto(producto.costos_por_bodega[bodega] || 0) }}</td>
               </template>
             </tr>
@@ -277,14 +278,8 @@ export default {
               nombre: producto.nombre,
               cantidad_total: Number(producto.cantidad_total) || 0,
               stock_minimo: producto.stock_minimo !== null ? Number(producto.stock_minimo) : null,
-              cantidades_por_bodega: Object.keys(producto.cantidades_por_bodega).reduce((acc, bodega) => {
-                acc[bodega] = Number(producto.cantidades_por_bodega[bodega]) || 0;
-                return acc;
-              }, {}),
-              costos_por_bodega: Object.keys(producto.costos_por_bodega).reduce((acc, bodega) => {
-                acc[bodega] = Number(producto.costos_por_bodega[bodega]) || 0;
-                return acc;
-              }, {})
+              cantidades_por_bodega: { ...producto.cantidades_por_bodega },
+              costos_por_bodega: { ...producto.costos_por_bodega }
             }));
         } else {
           alert('No se encontraron datos para el producto especificado.');
@@ -329,14 +324,8 @@ export default {
             nombre: producto.nombre,
             cantidad_total: Number(producto.cantidad_total) || 0,
             stock_minimo: producto.stock_minimo !== null ? Number(producto.stock_minimo) : null,
-            cantidades_por_bodega: Object.keys(producto.cantidades_por_bodega).reduce((acc, bodega) => {
-              acc[bodega] = Number(producto.cantidades_por_bodega[bodega]) || 0;
-              return acc;
-            }, {}),
-            costos_por_bodega: Object.keys(producto.costos_por_bodega).reduce((acc, bodega) => {
-              acc[bodega] = Number(producto.costos_por_bodega[bodega]) || 0;
-              return acc;
-            }, {})
+            cantidades_por_bodega: { ...producto.cantidades_por_bodega },
+            costos_por_bodega: { ...producto.costos_por_bodega }
           }));
 
         const offset = (this.paginaActual - 1) * this.limite;
@@ -452,9 +441,6 @@ export default {
     formatCosto(costo) {
       return Number(costo).toLocaleString("es-CO", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     },
-    formatCantidad(cantidad) {
-      return Number(cantidad).toLocaleString("es-CO", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    },
     exportarAExcel() {
       const dataToExport = this.filtroProducto || this.codigoDigitado || this.nombreDigitado
         ? this.productosFiltrados
@@ -466,11 +452,8 @@ export default {
         worksheetData = [
           ["Resumen de Costos por Almacén"],
           ["Almacén", "Costo Total"],
-          ...Object.entries(this.resumenCostos).map(([bodega, costo]) => [
-            bodega,
-            Number(costo).toFixed(2)
-          ]),
-          ["TOTAL", Number(Object.values(this.resumenCostos).reduce((sum, costo) => sum + costo, 0)).toFixed(2)],
+          ...Object.entries(this.resumenCostos).map(([bodega, costo]) => [bodega, costo]),
+          ["TOTAL", Object.values(this.resumenCostos).reduce((sum, costo) => sum + costo, 0)],
           [""]
         ];
       }
@@ -498,11 +481,11 @@ export default {
           producto.codigo,
           producto.nombre,
           producto.stock_minimo !== null ? producto.stock_minimo : "-",
-          Number(producto.cantidad_total).toFixed(2),
+          producto.cantidad_total,
           getEstado(producto),
           ...this.bodegas.flatMap((bodega) => [
-            Number(producto.cantidades_por_bodega[bodega] || 0).toFixed(2),
-            Number(producto.costos_por_bodega[bodega] || 0).toFixed(2)
+            producto.cantidades_por_bodega[bodega] || 0,
+            producto.costos_por_bodega[bodega] || 0
           ])
         ])
       );

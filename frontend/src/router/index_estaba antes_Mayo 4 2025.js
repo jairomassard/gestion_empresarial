@@ -25,7 +25,7 @@ import PointsOfSale from '../views/PointsOfSale.vue';
 import ProfilesClientes from '../views/ProfilesClientes.vue';
 import UsersClientes from '../views/UsersClientes.vue';
 import CutoffConfig from '../views/CutoffConfig.vue';
-import SyncConfig from '../views/SyncConfig.vue';
+
 
 const routes = [
   {
@@ -130,12 +130,6 @@ const routes = [
     component: () => import('../views/SettingsMenu.vue'),
     meta: { requiresAuth: true, seccion: 'parametrizacion', permiso: 'editar' }
   },
-  {
-    path: '/sync-config',
-    name: 'SyncConfig',
-    component: SyncConfig,
-    meta: { requiresAuth: true, seccion: 'parametrizacion', subseccion: 'sync_config', permiso: 'editar' }
-  },
   { path: '/login', name: 'Login', component: Login },
   { path: '/upload', name: 'UploadMenu', component: UploadMenu, meta: { requiresAuth: true, seccion: 'cargue', permiso: 'editar' } },
   { path: '/upload/sales', name: 'UploadSales', component: UploadSales, meta: { requiresAuth: true, seccion: 'cargue', subseccion: 'ventas_diarias', permiso: 'editar' } },
@@ -180,19 +174,13 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   const store = useStore();
-  console.log(`Navigating to: ${to.path}, from: ${from.path}`);
-  console.log('Current auth state:', store.state.auth);
-  console.log('Current cliente state:', store.state.cliente);
-
   if (to.matched.some(record => record.meta.requiresAuth)) {
     if (!store.getters.isAuthenticated) {
-      console.log('Not authenticated, redirecting to /login');
       next('/login');
       return;
     }
     if (to.matched.some(record => record.meta.requiresSuperAdmin)) {
       if (!store.getters.isSuperAdmin) {
-        console.log('Not superadmin, redirecting to /');
         next('/');
         return;
       }
@@ -200,7 +188,6 @@ router.beforeEach((to, from, next) => {
       return;
     }
     if (store.state.auth.idcliente && store.state.cliente.estado === false) {
-      console.log('Cliente estado is false, logging out and redirecting to /login');
       store.commit('logout');
       next('/login');
       return;
@@ -210,28 +197,23 @@ router.beforeEach((to, from, next) => {
       for (const record of permissionRecords) {
         const { seccion, subseccion, permiso } = record.meta;
         if (!store.getters.hasPermission(seccion, subseccion, permiso)) {
-          console.log(`Permission denied for ${seccion}/${subseccion}/${permiso}`);
+          console.log(`Permiso denegado para ${seccion}/${subseccion}/${permiso}`);
           next('/');
           return;
         }
       }
     }
     if (store.state.auth.idcliente && !store.state.cliente.nombre) {
-      console.log('No cliente nombre, fetching cliente data');
       store.dispatch('fetchCliente').then(() => {
-        console.log('fetchCliente succeeded, proceeding to route');
         next();
-      }).catch(err => {
-        console.error('fetchCliente failed:', err);
+      }).catch(() => {
         next('/');
       });
     } else {
-      console.log('All checks passed, proceeding to route');
       next();
     }
   } else {
     if (to.path === '/login' && store.getters.isAuthenticated) {
-      console.log('Already authenticated, redirecting based on role');
       if (store.getters.isSuperAdmin) {
         next('/admin');
       } else {
@@ -239,7 +221,6 @@ router.beforeEach((to, from, next) => {
       }
       return;
     }
-    console.log('No auth required, proceeding to route');
     next();
   }
 });

@@ -1,8 +1,17 @@
 <template>
-  <div class="profiles-clientes">
+  <div class="profiles">
     <h3>Gestión de Perfiles</h3>
     <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
     <form @submit.prevent="isEditing ? updateProfile() : createProfile()">
+      <div class="form-group">
+        <label for="idcliente">Cliente:</label>
+        <select id="idcliente" v-model="idcliente" required>
+          <option value="">Seleccione un cliente</option>
+          <option v-for="cliente in clientes" :key="cliente.idcliente" :value="cliente.idcliente">
+            {{ cliente.nombre }}
+          </option>
+        </select>
+      </div>
       <div class="form-group">
         <label for="perfil_nombre">Nombre del Perfil:</label>
         <input type="text" id="perfil_nombre" v-model="perfil_nombre" required />
@@ -44,12 +53,14 @@
     <table>
       <thead>
         <tr>
+          <th>Cliente</th>
           <th>Nombre</th>
           <th>Acciones</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="perfil in perfiles" :key="perfil.perfil_id">
+          <td>{{ getClienteNombre(perfil.idcliente) }}</td>
           <td>{{ perfil.perfil_nombre }}</td>
           <td>
             <button @click="editProfile(perfil)">Editar</button>
@@ -67,17 +78,20 @@ import { ref, onMounted } from 'vue';
 import { useStore } from 'vuex';
 
 export default {
-  name: 'ProfilesClientes',
+  name: 'Profiles',
   setup() {
     const store = useStore();
+    const clientes = ref([]);
     const perfiles = ref([]);
+    const idcliente = ref('');
     const perfil_nombre = ref('');
     const permisos = ref({
       dashboard: [],
       cargue: [],
+      parametrizacion: [],
       inventario: [],
       production: [],
-      parametrizacion: [],
+      administracion: [],
       dashboard_venta_acumulada_pdv: [],
       dashboard_ventas_historicas: [],
       dashboard_rendimiento_mensual: [],
@@ -91,6 +105,9 @@ export default {
       cargue_venta_mensual_historica: [],
       cargue_presupuesto_venta: [],
       cargue_puntos_de_venta: [],
+      parametrizacion_perfiles: [],
+      parametrizacion_usuarios: [],
+      parametrizacion_cutoff: [],
       inventario_consulta_inventario: [],
       inventario_consulta: [],
       inventario_kardex: [],
@@ -103,11 +120,9 @@ export default {
       inventario_traslados: [],
       production_admin: [],
       production_reportes: [],
-      parametrizacion_puntos_de_venta: [],
-      parametrizacion_perfiles: [],
-      parametrizacion_usuarios: [],
-      parametrizacion_cutoff: [],
-      parametrizacion_sync_config: [],
+      administracion_crear_clientes: [],
+      administracion_crear_perfiles: [],
+      administracion_crear_usuarios: [],
     });
     const errorMessage = ref('');
     const isEditing = ref(false);
@@ -142,6 +157,16 @@ export default {
         ],
       },
       {
+        name: 'parametrizacion',
+        displayName: 'Parametrización',
+        permisos: ['editar'],
+        subsecciones: [
+          { name: 'perfiles', displayName: 'Creación de Perfiles', permisos: ['editar'] },
+          { name: 'usuarios', displayName: 'Creación de Usuarios', permisos: ['editar'] },
+          { name: 'cutoff', displayName: 'Configuración Mes de Corte historico (Cutoff)', permisos: ['editar'] },
+        ],
+      },
+      {
         name: 'inventario',
         displayName: 'Inventario',
         permisos: ['ver'],
@@ -149,7 +174,7 @@ export default {
           { name: 'consulta_inventario', displayName: 'Consulta Inventario', permisos: ['ver'] },
           { name: 'consulta', displayName: 'Consulta Lite', permisos: ['ver'] },
           { name: 'kardex', displayName: 'Kardex', permisos: ['ver', 'editar'] },
-          { name: 'gestion_productos', displayName: 'Gestión de Productos', permisos: ['ver', 'editar'] },
+          { name: 'gestion_productos', displayName: 'Gestión de Productos', permisos: ['editar'] },
           { name: 'bodegas', displayName: 'Bodegas', permisos: ['ver', 'editar'] },
           { name: 'compras', displayName: 'Cargar Compras', permisos: ['ver', 'editar'] },
           { name: 'ventas', displayName: 'Cargar Ventas', permisos: ['ver', 'editar'] },
@@ -168,25 +193,35 @@ export default {
         ],
       },
       {
-        name: 'parametrizacion',
-        displayName: 'Parametrización',
-        permisos: ['editar'],
+        name: 'administracion',
+        displayName: 'Administración (Superadmin)',
+        permisos: [],
         subsecciones: [
-          { name: 'perfiles', displayName: 'Creación de Perfiles', permisos: ['editar'] },
-          { name: 'usuarios', displayName: 'Creación de Usuarios', permisos: ['editar'] },
-          { name: 'cutoff', displayName: 'Configuración Mes de Corte historico (Cutoff)', permisos: ['editar'] },
-          { name: 'sync_config', displayName: 'Configuración de Sincronización Módulos', permisos: ['editar'] },
+          { name: 'crear_clientes', displayName: 'Crear Clientes', permisos: ['crear'] },
+          { name: 'crear_perfiles', displayName: 'Crear Perfiles', permisos: ['crear'] },
+          { name: 'crear_usuarios', displayName: 'Crear Usuarios', permisos: ['crear'] },
         ],
       },
     ];
 
+    const fetchClientes = async () => {
+      try {
+        const token = store.state.auth.token;
+        if (!token) throw new Error('No se encontró token de autenticación');
+        const response = await axios.get('/clientes', { headers: { Authorization: `Bearer ${token}` } });
+        clientes.value = response.data;
+      } catch (err) {
+        errorMessage.value = err.response?.data?.error || 'Error al obtener clientes';
+        console.error('Error al obtener clientes:', err);
+      }
+    };
+
     const fetchPerfiles = async () => {
       try {
         const token = store.state.auth.token;
-        const idcliente = store.state.auth.idcliente;
-        if (!token || !idcliente) throw new Error('Autenticación inválida');
+        if (!token) throw new Error('No se encontró token de autenticación');
         const response = await axios.get('/perfiles', { headers: { Authorization: `Bearer ${token}` } });
-        perfiles.value = response.data; // Backend ya filtra por idcliente
+        perfiles.value = response.data;
       } catch (err) {
         errorMessage.value = err.response?.data?.error || 'Error al obtener perfiles';
         console.error('Error al obtener perfiles:', err);
@@ -201,7 +236,9 @@ export default {
           headers: { Authorization: `Bearer ${token}` },
         });
         const permisosData = response.data;
+
         clearPermisos();
+
         permisosData.forEach(p => {
           const key = p.subseccion ? `${p.seccion}_${p.subseccion}` : p.seccion;
           if (permisos.value[key] !== undefined) {
@@ -210,6 +247,7 @@ export default {
             console.warn(`Permiso no soportado en frontend: ${key} - ${p.permiso}`);
           }
         });
+
         console.log('Permisos cargados:', permisos.value);
       } catch (err) {
         errorMessage.value = err.response?.data?.error || 'Error al obtener permisos';
@@ -220,14 +258,14 @@ export default {
     const createProfile = async () => {
       try {
         const token = store.state.auth.token;
-        const idcliente = store.state.auth.idcliente;
-        if (!token || !idcliente) throw new Error('Autenticación inválida');
+        if (!token) throw new Error('No se encontró token de autenticación');
         const perfilResponse = await axios.post(
           '/perfiles',
-          { idcliente, perfil_nombre: perfil_nombre.value },
+          { idcliente: idcliente.value, perfil_nombre: perfil_nombre.value },
           { headers: { Authorization: `Bearer ${token}` } }
         );
         const perfil_id = perfilResponse.data.perfil_id;
+
         await savePermisos(perfil_id);
         clearForm();
         fetchPerfiles();
@@ -240,6 +278,7 @@ export default {
     const editProfile = async (perfil) => {
       isEditing.value = true;
       editingPerfilId.value = perfil.perfil_id;
+      idcliente.value = perfil.idcliente;
       perfil_nombre.value = perfil.perfil_nombre;
       await fetchPermisos(perfil.perfil_id);
     };
@@ -247,11 +286,10 @@ export default {
     const updateProfile = async () => {
       try {
         const token = store.state.auth.token;
-        const idcliente = store.state.auth.idcliente;
-        if (!token || !idcliente) throw new Error('Autenticación inválida');
+        if (!token) throw new Error('No se encontró token de autenticación');
         await axios.put(
           `/perfiles/${editingPerfilId.value}`,
-          { idcliente, perfil_nombre: perfil_nombre.value },
+          { idcliente: idcliente.value, perfil_nombre: perfil_nombre.value },
           { headers: { Authorization: `Bearer ${token}` } }
         );
         await savePermisos(editingPerfilId.value);
@@ -299,14 +337,23 @@ export default {
           });
         }
       });
+
       if (permisosToSave.length > 0) {
-        await axios.put(`/perfiles/${perfil_id}/permisos`, { permisos: permisosToSave }, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        await axios.put(
+          `/perfiles/${perfil_id}/permisos`,
+          permisosToSave,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
       }
     };
 
+    const getClienteNombre = (idcliente) => {
+      const cliente = clientes.value.find(c => c.idcliente === idcliente);
+      return cliente ? cliente.nombre : 'N/A';
+    };
+
     const clearForm = () => {
+      idcliente.value = '';
       perfil_nombre.value = '';
       clearPermisos();
       errorMessage.value = '';
@@ -316,9 +363,10 @@ export default {
       permisos.value = {
         dashboard: [],
         cargue: [],
+        parametrizacion: [],
         inventario: [],
         production: [],
-        parametrizacion: [],
+        administracion: [],
         dashboard_venta_acumulada_pdv: [],
         dashboard_ventas_historicas: [],
         dashboard_rendimiento_mensual: [],
@@ -332,6 +380,9 @@ export default {
         cargue_venta_mensual_historica: [],
         cargue_presupuesto_venta: [],
         cargue_puntos_de_venta: [],
+        parametrizacion_perfiles: [],
+        parametrizacion_usuarios: [],
+        parametrizacion_cutoff: [],
         inventario_consulta_inventario: [],
         inventario_consulta: [],
         inventario_kardex: [],
@@ -344,11 +395,9 @@ export default {
         inventario_traslados: [],
         production_admin: [],
         production_reportes: [],
-        parametrizacion_puntos_de_venta: [],
-        parametrizacion_perfiles: [],
-        parametrizacion_usuarios: [],
-        parametrizacion_cutoff: [],
-        parametrizacion_sync_config: [],
+        administracion_crear_clientes: [],
+        administracion_crear_perfiles: [],
+        administracion_crear_usuarios: [],
       };
     };
 
@@ -359,11 +408,14 @@ export default {
     };
 
     onMounted(() => {
+      fetchClientes();
       fetchPerfiles();
     });
 
     return {
+      clientes,
       perfiles,
+      idcliente,
       perfil_nombre,
       permisos,
       secciones,
@@ -374,13 +426,14 @@ export default {
       updateProfile,
       deleteProfile,
       cancelEdit,
+      getClienteNombre,
     };
   },
 };
 </script>
 
 <style scoped>
-.profiles-clientes {
+.profiles {
   padding: 20px;
   max-width: 1200px;
   margin: 0 auto;
@@ -396,7 +449,8 @@ label {
   font-weight: bold;
 }
 
-input {
+input,
+select {
   width: 100%;
   padding: 10px;
   border: 1px solid #ccc;

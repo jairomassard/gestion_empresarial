@@ -2,7 +2,7 @@
   <div class="login-container">
     <div class="login-card">
       <div class="header">
-        <h1 class="system-title">Gestión Empresarial</h1>
+        <h1 class="system-title">Análisis y Gestión Empresarial</h1>
         <p class="subtitle">Inicio de sesión</p>
       </div>
       <form @submit.prevent="login" class="login-form">

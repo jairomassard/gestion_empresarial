@@ -107,7 +107,6 @@ export default {
       parametrizacion_perfiles: [],
       parametrizacion_usuarios: [],
       parametrizacion_cutoff: [],
-      parametrizacion_sync_config: [],
     });
     const errorMessage = ref('');
     const isEditing = ref(false);
@@ -149,7 +148,7 @@ export default {
           { name: 'consulta_inventario', displayName: 'Consulta Inventario', permisos: ['ver'] },
           { name: 'consulta', displayName: 'Consulta Lite', permisos: ['ver'] },
           { name: 'kardex', displayName: 'Kardex', permisos: ['ver', 'editar'] },
-          { name: 'gestion_productos', displayName: 'Gestión de Productos', permisos: ['ver', 'editar'] },
+          { name: 'gestion_productos', displayName: 'Gestión de Productos', permisos: ['editar'] },
           { name: 'bodegas', displayName: 'Bodegas', permisos: ['ver', 'editar'] },
           { name: 'compras', displayName: 'Cargar Compras', permisos: ['ver', 'editar'] },
           { name: 'ventas', displayName: 'Cargar Ventas', permisos: ['ver', 'editar'] },
@@ -175,7 +174,6 @@ export default {
           { name: 'perfiles', displayName: 'Creación de Perfiles', permisos: ['editar'] },
           { name: 'usuarios', displayName: 'Creación de Usuarios', permisos: ['editar'] },
           { name: 'cutoff', displayName: 'Configuración Mes de Corte historico (Cutoff)', permisos: ['editar'] },
-          { name: 'sync_config', displayName: 'Configuración de Sincronización Módulos', permisos: ['editar'] },
         ],
       },
     ];
@@ -300,7 +298,7 @@ export default {
         }
       });
       if (permisosToSave.length > 0) {
-        await axios.put(`/perfiles/${perfil_id}/permisos`, { permisos: permisosToSave }, {
+        await axios.put(`/perfiles/${perfil_id}/permisos`, permisosToSave, {
           headers: { Authorization: `Bearer ${token}` },
         });
       }
@@ -348,7 +346,6 @@ export default {
         parametrizacion_perfiles: [],
         parametrizacion_usuarios: [],
         parametrizacion_cutoff: [],
-        parametrizacion_sync_config: [],
       };
     };
 

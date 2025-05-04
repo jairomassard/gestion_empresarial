@@ -4,6 +4,7 @@
     <div class="instructions">
       <p>Suba un archivo Excel (.xlsx) con las ventas diarias. Descargue la plantilla para usar el formato correcto.</p>
       <p><strong>Columnas requeridas:</strong> Fecha, Rangos Horarios, Almacén, Cliente, Nombre Vendedor, Descripción, Uds., Importe</p>
+      <p><strong>Tenga presente:</strong> Si tiene sincronizado el módulo de analisis con el de inventario y producción, el nombe de los productos de la columna "Descripción" debe coincidir con el de los productos creados en el módulo de inventarios.</p>
     </div>
     <div class="form-group">
       <button @click="downloadTemplate">Descargar Plantilla</button>

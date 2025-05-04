@@ -12,7 +12,7 @@ export default createStore({
     cliente: {
       nombre: '',
       logo: '',
-      estado: true
+      estado: true  // Añadimos estado con valor por defecto true
     }
   },
   mutations: {
@@ -25,7 +25,7 @@ export default createStore({
     setCliente(state, { nombre, logo, estado }) {
       state.cliente.nombre = nombre;
       state.cliente.logo = logo;
-      state.cliente.estado = estado !== undefined ? estado : true;
+      state.cliente.estado = estado !== undefined ? estado : true; // Manejamos el caso donde estado no se envíe
     },
     logout(state) {
       state.auth.token = null;
@@ -34,29 +34,23 @@ export default createStore({
       state.auth.permisos = [];
       state.cliente.nombre = '';
       state.cliente.logo = '';
-      state.cliente.estado = true;
+      state.cliente.estado = true; // Restablecemos estado a true
     }
   },
   actions: {
     async fetchCliente({ commit, state }) {
-      if (!state.auth.idcliente) {
-        console.error('No idcliente available for fetchCliente');
-        return;
-      }
+      if (!state.auth.idcliente) return;
       try {
-        console.log(`Fetching cliente data for idcliente: ${state.auth.idcliente}`);
-        const response = await axios.get(`/cliente/${state.auth.idcliente}`, {
+        const response = await axios.get(`/cliente/${state.auth.idcliente}`, {  // Ajusté a /cliente/<idcliente> según tu backend
           headers: { Authorization: `Bearer ${state.auth.token}` }
         });
-        console.log('fetchCliente response:', response.data);
         commit('setCliente', {
-          nombre: response.data.nombre || '',
-          logo: response.data.logo || '',
-          estado: response.data.estado !== undefined ? response.data.estado : true
+          nombre: response.data.nombre,
+          logo: response.data.logo,
+          estado: response.data.estado  // Añadimos estado
         });
       } catch (err) {
-        console.error('Error fetching cliente:', err.response?.data || err.message);
-        throw err; // Re-lanzar para que router.beforeEach maneje el error
+        console.error('Error al obtener información del cliente:', err);
       }
     }
   },
@@ -64,17 +58,11 @@ export default createStore({
     isAuthenticated: state => !!state.auth.token,
     isSuperAdmin: state => state.auth.perfilid === 1,
     hasPermission: state => (seccion, subseccion, permiso) => {
-      if (state.auth.perfilid === 1) {
-        console.log('Superadmin access granted');
-        return true; // Superadmin tiene acceso total
-      }
-      const hasPerm = state.auth.permisos.some(p =>
+      return state.auth.permisos.some(p =>
         p.seccion === seccion &&
         (p.subseccion === subseccion || (!subseccion && !p.subseccion)) &&
-        (p.permiso === permiso || (permiso === 'ver' && p.permiso === 'editar'))
+        p.permiso === permiso
       );
-      console.log(`Checking permission: ${seccion}/${subseccion}/${permiso} -> ${hasPerm}`);
-      return hasPerm;
     }
   }
 });

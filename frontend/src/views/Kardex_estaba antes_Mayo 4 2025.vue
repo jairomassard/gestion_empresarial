@@ -82,13 +82,13 @@
           <tbody>
             <tr v-for="(resumen, index) in resumenPorAlmacen" :key="index">
               <td>{{ resumen.almacen }}</td>
-              <td>{{ formatCosto(resumen.stockFinal) }}</td>
-              <td>{{ resumen.valorAcumulado !== null && resumen.valorAcumulado !== undefined ? `$${formatCosto(resumen.valorAcumulado)}` : '$0.00' }}</td>
-              <td>{{ resumen.cpp !== null && resumen.cpp !== undefined && resumen.stockFinal > 0 ? `$${formatCosto(resumen.cpp)}` : 'N/A' }}</td>
+              <td>{{ resumen.stockFinal }}</td>
+              <td>{{ resumen.valorAcumulado ? `$${formatCosto(resumen.valorAcumulado)}` : 'N/A' }}</td>
+              <td>{{ resumen.cpp ? `$${formatCosto(resumen.cpp)}` : 'N/A' }}</td>
             </tr>
             <tr class="total-row">
               <td><strong>TOTAL</strong></td>
-              <td><strong>{{ formatCosto(totalStock) }}</strong></td>
+              <td><strong>{{ totalStock }}</strong></td>
               <td><strong>{{ totalValor ? `$${formatCosto(totalValor)}` : 'N/A' }}</strong></td>
               <td></td>
             </tr>
@@ -162,8 +162,8 @@
               <td>{{ registro.costo_unitario ? `$${formatCosto(registro.costo_unitario)}` : 'N/A' }}</td>
               <td>{{ registro.tipo === 'SALIDA' ? `-$${formatCosto(registro.costo_total)}` : `$${formatCosto(registro.costo_total)}` }}</td>
               <td>{{ registro.saldo }}</td>
-              <td>{{ registro.saldo_costo_total !== null && registro.saldo_costo_total !== undefined ? `$${formatCosto(registro.saldo_costo_total)}` : '$0.00' }}</td>
-              <td>{{ registro.saldo_costo_unitario !== null && registro.saldo_costo_unitario !== undefined && registro.saldo > 0 ? `$${formatCosto(registro.saldo_costo_unitario)}` : 'N/A' }}</td>
+              <td>{{ registro.saldo_costo_total !== null && registro.saldo_costo_total !== undefined ? `$${formatCosto(registro.saldo_costo_total)}` : 'N/A' }}</td>
+              <td>{{ registro.saldo_costo_unitario ? `$${formatCosto(registro.saldo_costo_unitario)}` : 'N/A' }}</td>
               <td>{{ registro.saldo_costo_unitario_global ? `$${formatCosto(registro.saldo_costo_unitario_global)}` : 'N/A' }}</td>
               <td>{{ registro.descripcion }}</td>
             </tr>
@@ -255,7 +255,6 @@ export default {
         }
 
         const response = await apiClient.get('/inventory/kardex', { params });
-        console.log('Datos del kardex:', JSON.stringify(response.data, null, 2)); // Log detallado
         const data = response.data;
 
         if (data.message) {
@@ -282,42 +281,20 @@ export default {
       const almacenes = [...new Set(this.kardex.map((mov) => mov.bodega))].filter((b) => b);
       this.resumenPorAlmacen = almacenes
         .map((almacen) => {
-          const movimientosAlmacen = this.kardex.filter((mov) => mov.bodega === almacen);
-          // Calcular stock final y valor acumulado
-          const stockFinal = movimientosAlmacen.reduce((sum, mov) => {
-            if (mov.tipo === 'ENTRADA') {
-              return sum + mov.cantidad;
-            } else if (mov.tipo === 'SALIDA') {
-              return sum - mov.cantidad;
-            }
-            return sum; // Ignorar otros tipos (por ejemplo, SALDO INICIAL)
-          }, 0);
-          const valorAcumulado = movimientosAlmacen.reduce((sum, mov) => {
-            if (mov.tipo === 'ENTRADA') {
-              return sum + (mov.costo_total || 0);
-            } else if (mov.tipo === 'SALIDA') {
-              return sum - (mov.costo_total || 0);
-            }
-            return sum;
-          }, 0);
-          // Calcular CPP (promedio de costo unitario de entradas)
-          const entradas = movimientosAlmacen.filter((mov) => mov.tipo === 'ENTRADA');
-          const cpp =
-            entradas.length > 0
-              ? entradas.reduce((sum, mov) => sum + (mov.costo_unitario || 0), 0) / entradas.length
-              : 0;
+          const movimientosAlmacen = this.kardex
+            .filter((mov) => mov.bodega === almacen)
+            .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+          const ultimoMovimiento = movimientosAlmacen[0];
           return {
             almacen,
-            stockFinal: parseFloat(stockFinal.toFixed(2)), // Redondear a 2 decimales
-            valorAcumulado: valorAcumulado || 0,
-            cpp: stockFinal > 0 ? cpp : 0, // CPP es 0 si no hay stock
+            stockFinal: ultimoMovimiento.saldo,
+            valorAcumulado: ultimoMovimiento.saldo_costo_total,
+            cpp: ultimoMovimiento.saldo_costo_unitario,
           };
         })
         .sort((a, b) => a.almacen.localeCompare(b.almacen));
 
-      this.totalStock = parseFloat(
-        this.resumenPorAlmacen.reduce((sum, r) => sum + r.stockFinal, 0).toFixed(2)
-      );
+      this.totalStock = this.resumenPorAlmacen.reduce((sum, r) => sum + r.stockFinal, 0);
       this.totalValor = this.resumenPorAlmacen.reduce((sum, r) => sum + (r.valorAcumulado || 0), 0);
       this.cppGlobal = this.totalStock > 0 ? this.totalValor / this.totalStock : 0;
     },
@@ -380,16 +357,16 @@ export default {
         `Rango de Fechas: ${this.fechaInicio} a ${this.fechaFin}\n` +
         `Almacén: ${this.bodegasSeleccionadas.length > 0 && !this.bodegasSeleccionadas.includes('') ? this.bodegasSeleccionadas.join(', ') : 'Todos'}\n\n` +
         `Resumen por Almacén\n` +
-        `CPP GLOBAL;${this.cppGlobal ? this.formatCosto(this.cppGlobal) : 'N/A'}\n\n` +
+        `CPP GLOBAL;${this.cppGlobal ? this.cppGlobal.toFixed(2) : 'N/A'}\n\n` +
         `ALMACÉN;STOCK FINAL;VALOR ACUMULADO;CPP\n` +
         this.resumenPorAlmacen
           .map(
             (resumen) =>
-              `${resumen.almacen};${this.formatCosto(resumen.stockFinal)};${resumen.valorAcumulado ? this.formatCosto(resumen.valorAcumulado) : 'N/A'};${resumen.cpp ? this.formatCosto(resumen.cpp) : 'N/A'}`
+              `${resumen.almacen};${resumen.stockFinal};${resumen.valorAcumulado ? resumen.valorAcumulado.toFixed(2) : 'N/A'};${resumen.cpp ? resumen.cpp.toFixed(2) : 'N/A'}`
           )
           .join('\n') +
         '\n' +
-        `TOTAL;${this.formatCosto(this.totalStock)};${this.totalValor ? this.formatCosto(this.totalValor) : 'N/A'};\n\n` +
+        `TOTAL;${this.totalStock};${this.totalValor ? this.totalValor.toFixed(2) : 'N/A'};\n\n` +
         `Movimientos del Producto\n` +
         `Fecha;Documento;Almacén;Cant.;Costo;Costo Total;Cantidad Acumulada;Valor Acumulado;CPP;CPP Global;Descripción\n` +
         this.kardexFiltrado
@@ -398,14 +375,14 @@ export default {
             mov.tipo,
             mov.bodega || 'N/A',
             mov.tipo === 'SALIDA' ? -mov.cantidad : mov.cantidad,
-            mov.costo_unitario ? this.formatCosto(mov.costo_unitario) : 'N/A',
-            mov.tipo === 'SALIDA' ? `-${this.formatCosto(mov.costo_total)}` : mov.costo_total ? this.formatCosto(mov.costo_total) : 'N/A',
-            this.formatCosto(mov.saldo),
+            mov.costo_unitario ? mov.costo_unitario.toFixed(2) : 'N/A',
+            mov.tipo === 'SALIDA' ? -mov.costo_total : mov.costo_total ? mov.costo_total.toFixed(2) : 'N/A',
+            mov.saldo,
             mov.saldo_costo_total !== undefined && mov.saldo_costo_total !== null
-              ? this.formatCosto(mov.saldo_costo_total)
+              ? mov.saldo_costo_total.toFixed(2)
               : 'N/A',
-            mov.saldo_costo_unitario ? this.formatCosto(mov.saldo_costo_unitario) : 'N/A',
-            mov.saldo_costo_unitario_global ? this.formatCosto(mov.saldo_costo_unitario_global) : 'N/A',
+            mov.saldo_costo_unitario ? mov.saldo_costo_unitario.toFixed(2) : 'N/A',
+            mov.saldo_costo_unitario_global ? mov.saldo_costo_unitario_global.toFixed(2) : 'N/A',
             mov.descripcion.replace(/;/g, ' '),
           ].join(';'))
           .join('\n');
@@ -440,16 +417,16 @@ export default {
         ],
         [],
         ['Resumen por Almacén'],
-        ['CPP GLOBAL', this.cppGlobal ? this.formatCosto(this.cppGlobal) : 'N/A'],
+        ['CPP GLOBAL', this.cppGlobal ? this.cppGlobal.toFixed(2) : 'N/A'],
         [],
         ['ALMACÉN', 'STOCK FINAL', 'VALOR ACUMULADO', 'CPP'],
         ...this.resumenPorAlmacen.map((resumen) => [
           resumen.almacen,
-          this.formatCosto(resumen.stockFinal),
-          resumen.valorAcumulado ? this.formatCosto(resumen.valorAcumulado) : 'N/A',
-          resumen.cpp ? this.formatCosto(resumen.cpp) : 'N/A',
+          resumen.stockFinal,
+          resumen.valorAcumulado ? resumen.valorAcumulado.toFixed(2) : 'N/A',
+          resumen.cpp ? resumen.cpp.toFixed(2) : 'N/A',
         ]),
-        ['TOTAL', this.formatCosto(this.totalStock), this.totalValor ? this.formatCosto(this.totalValor) : 'N/A', ''],
+        ['TOTAL', this.totalStock, this.totalValor ? this.totalValor.toFixed(2) : 'N/A', ''],
         [],
         ['Movimientos del Producto'],
         [
@@ -470,14 +447,14 @@ export default {
           mov.tipo,
           mov.bodega || 'N/A',
           mov.tipo === 'SALIDA' ? -mov.cantidad : mov.cantidad,
-          mov.costo_unitario ? this.formatCosto(mov.costo_unitario) : 'N/A',
-          mov.tipo === 'SALIDA' ? `-${this.formatCosto(mov.costo_total)}` : mov.costo_total ? this.formatCosto(mov.costo_total) : 'N/A',
-          this.formatCosto(mov.saldo),
+          mov.costo_unitario ? mov.costo_unitario.toFixed(2) : 'N/A',
+          mov.tipo === 'SALIDA' ? -mov.costo_total : mov.costo_total ? mov.costo_total.toFixed(2) : 'N/A',
+          mov.saldo,
           mov.saldo_costo_total !== undefined && mov.saldo_costo_total !== null
-            ? this.formatCosto(mov.saldo_costo_total)
+            ? mov.saldo_costo_total.toFixed(2)
             : 'N/A',
-          mov.saldo_costo_unitario ? this.formatCosto(mov.saldo_costo_unitario) : 'N/A',
-          mov.saldo_costo_unitario_global ? this.formatCosto(mov.saldo_costo_unitario_global) : 'N/A',
+          mov.saldo_costo_unitario ? mov.saldo_costo_unitario.toFixed(2) : 'N/A',
+          mov.saldo_costo_unitario_global ? mov.saldo_costo_unitario_global.toFixed(2) : 'N/A',
           mov.descripcion,
         ]),
       ];

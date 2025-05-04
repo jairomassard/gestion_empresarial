@@ -84,13 +84,10 @@ export default {
         return '/production';
       }
       if (
-        route.path.startsWith('/settings/') ||
         route.path.startsWith('/profiles-clientes') ||
-        route.path.startsWith('/users-clientes') ||
-        route.path.startsWith('/cutoff-config') ||
-        route.path.startsWith('/sync-config')
+        route.path.startsWith('/users-clientes')
       ) {
-        return '/settings'; // Subpáginas de Parametrización vuelven a /settings
+        return '/'; // Parametrización ahora va al MainMenu
       }
 
       return '/'; // Por defecto, al MainMenu

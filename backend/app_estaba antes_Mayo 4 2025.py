@@ -24,7 +24,6 @@ from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from datetime import datetime
 from pytz import timezone
 from contextlib import contextmanager
-import uuid
 
 from datetime import datetime, timezone
 from io import BytesIO
@@ -33,12 +32,10 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 from reportlab.lib.styles import getSampleStyleSheet
 from decimal import Decimal
-import locale
-import unicodedata
 
 
-# Crer la aplicacpon Flask
-app = Flask(__name__)
+# Crear la aplicación Flask
+app = Flask(__name__, static_folder='static', static_url_path='')
 app.config.from_object(Config)
 
 # Configurar logging para ver errores detallados
@@ -49,7 +46,6 @@ logger = logging.getLogger(__name__)
 app.secret_key = app.config['SECRET_KEY']  # Usamos la clave del .env se usa para las sesiones
 app.config['JWT_SECRET_KEY'] = app.config['SECRET_KEY']  # Para JWT
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)  # Establecer duración del token a 8 horas
-
 # Al inicio de app.py, después de app.config.from_object(Config)
 #logger.info(f"SECRET_KEY: {app.config['SECRET_KEY']}")
 #logger.info(f"JWT_SECRET_KEY: {app.config['JWT_SECRET_KEY']}")
@@ -60,8 +56,7 @@ db.init_app(app)
 from models import (
     db, Usuarios, Clientes, Perfiles, Permisos, Producto, MaterialProducto, 
     Bodega, InventarioBodega, RegistroMovimientos, Kardex, Venta, EstadoInventario, 
-    AjusteInventarioDetalle, OrdenProduccion, DetalleProduccion, EntregaParcial, Configuraciones, 
-    PuntosDeVenta, VentaHistoricaHora, VentaHistorica
+    AjusteInventarioDetalle, OrdenProduccion, DetalleProduccion, EntregaParcial
 )
 
 jwt = JWTManager(app)
@@ -87,16 +82,14 @@ def unauthorized_callback(error):
 # Configurar CORS para permitir solicitudes desde el frontend
 # En desarrollo: localhost:8080 y 192.168.0.47:8080
 # En producción: el dominio del frontend en Railway
-allowed_origins = [
-    "http://localhost:8080",
-    "http://192.168.0.47:8080",
-    # Agrega el dominio del frontend en Railway cuando lo tengas
-    "https://frontend.railway.app"  # Placeholder, cámbialo por el dominio real
-]
-CORS(app, resources={r"/*": {"origins": allowed_origins}})
+#allowed_origins = [
+#    "http://localhost:8080",
+#    "http://192.168.0.47:8080",
+#    # Agrega el dominio del frontend en Railway cuando lo tengas
+#    "https://frontend.railway.app"  # Placeholder, cámbialo por el dominio real
+#]
+#CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
-# Configurar localización para es_CO
-locale.setlocale(locale.LC_ALL, 'es_CO.UTF-8')
 
 def get_db_connection():
     conn = psycopg2.connect(
@@ -126,13 +119,11 @@ def convertir_a_hora_colombia(fecha):
 
 @contextmanager
 def no_autoflush(session):
-    """Contexto para deshabilitar autoflush en la sesión."""
-    autoflush = session.autoflush
     session.autoflush = False
     try:
         yield
     finally:
-        session.autoflush = autoflush
+        session.autoflush = True
 
 def recalcular_peso_producto_compuesto(producto_id):
     producto = Producto.query.get(producto_id)
@@ -163,7 +154,6 @@ def mes_a_numero(mes):
 
 # Función para obtener el mes de corte
 def get_cutoff(id_cliente):
-    """Obtiene el año y mes de corte desde Configuraciones."""
     conn = psycopg2.connect(
         dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
         password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
@@ -171,256 +161,107 @@ def get_cutoff(id_cliente):
     )
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT cutoffyear, cutoffmonth FROM configuraciones WHERE idcliente = %s",
+        "SELECT CutoffYear, CutoffMonth FROM Configuraciones WHERE IdCliente = %s",
         (id_cliente,)
     )
     result = cursor.fetchone()
     conn.close()
-    return result if result else (2025, 2)
+    return result if result else (2025, 2)  # Fallback si no hay configuración
 
 
 
 def calcular_inventario_producto(producto_id, idcliente):
     try:
         print(f"[DEBUG] Calculando inventario para producto_id={producto_id}, idcliente={idcliente}")
-        movimientos = db.session.query(
+        ultimo_movimiento_por_bodega = db.session.query(
             Kardex.bodega_destino_id,
-            Kardex.bodega_origen_id,
-            Kardex.cantidad,
-            Kardex.tipo_movimiento,
-            Kardex.fecha,
-            Kardex.referencia
+            func.max(Kardex.fecha).label('ultima_fecha')
         ).filter(
             Kardex.producto_id == producto_id,
-            Kardex.idcliente == idcliente
+            Kardex.idcliente == idcliente,
+            Kardex.bodega_destino_id != None
+        ).group_by(Kardex.bodega_destino_id).subquery()
+
+        # Log para ver la subconsulta
+        subquery_result = db.session.query(ultimo_movimiento_por_bodega).all()
+        print(f"[DEBUG] Subconsulta ultimo_movimiento: {subquery_result}")
+
+        inventario = db.session.query(
+            Kardex.bodega_destino_id,
+            Kardex.saldo_cantidad.label('cantidad')
+        ).join(
+            ultimo_movimiento_por_bodega,
+            and_(
+                Kardex.fecha == ultimo_movimiento_por_bodega.c.ultima_fecha,
+                Kardex.bodega_destino_id == ultimo_movimiento_por_bodega.c.bodega_destino_id,
+                Kardex.producto_id == producto_id,
+                Kardex.idcliente == idcliente
+            )
         ).all()
-        
-        print(f"[DEBUG] Movimientos encontrados: {[(m.bodega_destino_id, m.bodega_origen_id, m.cantidad, m.tipo_movimiento, m.fecha, m.referencia) for m in movimientos]}")
-        
-        saldos_por_bodega = {}
-        for mov in movimientos:
-            if mov.tipo_movimiento == 'ENTRADA' and mov.bodega_destino_id is not None:
-                saldos_por_bodega[mov.bodega_destino_id] = saldos_por_bodega.get(mov.bodega_destino_id, 0.0) + float(mov.cantidad)
-                print(f"[DEBUG] Entrada: bodega_id={mov.bodega_destino_id}, cantidad={mov.cantidad}, saldo={saldos_por_bodega[mov.bodega_destino_id]}")
-            if mov.tipo_movimiento == 'SALIDA' and mov.bodega_origen_id is not None:
-                saldos_por_bodega[mov.bodega_origen_id] = saldos_por_bodega.get(mov.bodega_origen_id, 0.0) - float(mov.cantidad)
-                print(f"[DEBUG] Salida: bodega_id={mov.bodega_origen_id}, cantidad={mov.cantidad}, saldo={saldos_por_bodega[mov.bodega_origen_id]}")
-        
-        print(f"[DEBUG] Saldos calculados: {saldos_por_bodega}")
-        
+        print(f"[DEBUG] Inventario encontrado: {[(i.bodega_destino_id, i.cantidad) for i in inventario]}")
+
         resultado = []
-        for bodega_id, cantidad in saldos_por_bodega.items():
-            if cantidad > 0:
-                bodega = db.session.get(Bodega, bodega_id)
-                if bodega:
-                    resultado.append({
-                        'bodega': bodega.nombre,
-                        'cantidad': float(cantidad)
-                    })
-                else:
-                    print(f"[DEBUG] Bodega no encontrada: bodega_id={bodega_id}")
-        
-        resultado.sort(key=lambda x: x['bodega'])
-        
+        for item in inventario:
+            bodega = db.session.get(Bodega, item.bodega_destino_id)
+            print(f"[DEBUG] Bodega para id={item.bodega_destino_id}: {bodega.nombre if bodega else None}")
+            if bodega:
+                resultado.append({
+                    'bodega': bodega.nombre,
+                    'cantidad': float(item.cantidad) if item.cantidad is not None else 0.0
+                })
         print(f"[DEBUG] Resultado final: {resultado}")
         return resultado
     except Exception as e:
         print(f"Error en calcular_inventario_producto: {str(e)}")
         return []
 
-
-
 #Funcion para actualizar estado inventario cuando se hacentregas parciales o Totales de una orden de produccion
-def actualizar_estado_inventario(producto_id, bodega_id, cantidad, es_entrada, orden_id=None, idcliente=None):
-    """Actualiza el estado de inventario para entradas o salidas."""
-    inventario = EstadoInventario.query.filter(
-        and_(
-            EstadoInventario.producto_id == producto_id,
-            EstadoInventario.bodega_id == bodega_id,
-            EstadoInventario.idcliente == idcliente
-        )
-    ).first()
-    if not inventario and es_entrada:
-        inventario = EstadoInventario(
-            idcliente=idcliente,
+def actualizar_estado_inventario(producto_id, bodega_id, cantidad, es_entrada=True, orden_id=None):
+    try:
+        inventario = EstadoInventario.query.filter_by(
             producto_id=producto_id,
-            bodega_id=bodega_id,
-            cantidad=0,
-            costo_unitario=0.0,
-            costo_total=0.0,
-            ultima_actualizacion=datetime.now()
-        )
-        db.session.add(inventario)
+            bodega_id=bodega_id
+        ).first()
+        cantidad = float(cantidad)
 
-    ultimo_kardex = Kardex.query.filter(
-        and_(
+        if inventario:
+            if es_entrada:
+                inventario.cantidad += cantidad
+            else:
+                inventario.cantidad -= cantidad
+            inventario.ultima_actualizacion = obtener_hora_colombia()
+        else:
+            # Obtener idcliente desde la orden
+            if not orden_id:
+                raise ValueError("Se requiere orden_id para crear un nuevo registro en EstadoInventario")
+            orden = db.session.get(OrdenProduccion, orden_id)
+            if not orden:
+                raise ValueError("Orden no encontrada")
+            inventario = EstadoInventario(
+                idcliente=orden.idcliente,
+                producto_id=producto_id,
+                bodega_id=bodega_id,
+                cantidad=cantidad if es_entrada else -cantidad,
+                ultima_actualizacion=obtener_hora_colombia(),
+                costo_unitario=0.0,
+                costo_total=0.0
+            )
+            db.session.add(inventario)
+
+        # Consultar el último Kardex, considerando bodega_origen o bodega_destino
+        ultimo_kardex = Kardex.query.filter(
             Kardex.producto_id == producto_id,
-            Kardex.bodega_destino_id == bodega_id,
-            Kardex.idcliente == idcliente
-        )
-    ).order_by(Kardex.fecha.desc()).first()
-    costo_unitario = float(ultimo_kardex.saldo_costo_unitario) if ultimo_kardex else (float(inventario.costo_unitario) if inventario else 0.0)
-
-    if es_entrada:
-        inventario.cantidad += float(cantidad)
-    else:
-        if float(inventario.cantidad) < float(cantidad):
-            raise ValueError(f"No hay suficiente inventario para producto_id={producto_id} en bodega_id={bodega_id}")
-        inventario.cantidad -= float(cantidad)
-
-    inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = datetime.now()
-    logger.debug(f"Actualizado estado_inventario: producto_id={producto_id}, bodega_id={bodega_id}, cantidad={inventario.cantidad}, costo_total={inventario.costo_total}")
-
-
-def producir_compuesto_anidado(producto_compuesto_id, cantidad, bodega_id, idcliente, orden_id, numero_orden, fecha, referencia):
-    """Procesa un producto compuesto anidado y sus materiales."""
-    producto_compuesto = db.session.get(Producto, producto_compuesto_id)
-    if not producto_compuesto:
-        raise ValueError(f"Producto compuesto {producto_compuesto_id} no encontrado")
-
-    logger.debug(f"Procesando producto compuesto anidado: producto_id={producto_compuesto_id}, cantidad={cantidad}, bodega_id={bodega_id}")
-
-    # Procesar materiales del compuesto anidado
-    materiales = MaterialProducto.query.filter_by(
-        producto_compuesto_id=producto_compuesto_id, idcliente=idcliente
-    ).all()
-    costo_total = 0.0
-    for material in materiales:
-        producto_base = db.session.get(Producto, material.producto_base_id)
-        cantidad_necesaria = float(material.cantidad) * float(cantidad)
-        kardex_base = Kardex.query.filter_by(
-            producto_id=material.producto_base_id,
-            idcliente=idcliente,
-            bodega_destino_id=bodega_id
+            (Kardex.bodega_origen_id == bodega_id) | (Kardex.bodega_destino_id == bodega_id)
         ).order_by(Kardex.fecha.desc()).first()
-        costo_unitario_base = float(kardex_base.saldo_costo_unitario) if kardex_base else 0.0
-        costo_total += costo_unitario_base * cantidad_necesaria
-        logger.debug(f"Material: producto_base_id={material.producto_base_id}, cantidad_necesaria={cantidad_necesaria}, costo_unitario={costo_unitario_base}")
 
-        # Registrar consumo del material base
-        disponible, cantidad_actual = verificar_inventario(material.producto_base_id, bodega_id, cantidad_necesaria, idcliente)
-        if not disponible:
-            raise ValueError(f"No hay suficiente inventario para producto_base_id={material.producto_base_id}, requerido={cantidad_necesaria}, disponible={cantidad_actual}")
+        if ultimo_kardex:
+            inventario.costo_unitario = float(ultimo_kardex.saldo_costo_unitario)
+            inventario.costo_total = inventario.cantidad * inventario.costo_unitario
 
-        actualizar_estado_inventario(
-            material.producto_base_id,
-            bodega_id,
-            cantidad_necesaria,
-            es_entrada=False,
-            orden_id=orden_id,
-            idcliente=idcliente
-        )
-
-        referencia_truncada = f"Consumo para orden {numero_orden}"[:100]  # Truncar a 100 caracteres
-        kardex_salida = Kardex(
-            idcliente=idcliente,
-            producto_id=material.producto_base_id,
-            bodega_origen_id=bodega_id,
-            fecha=fecha,
-            tipo_movimiento='SALIDA',
-            cantidad=cantidad_necesaria,
-            costo_unitario=costo_unitario_base,
-            costo_total=costo_unitario_base * cantidad_necesaria,
-            saldo_cantidad=cantidad_actual - cantidad_necesaria,
-            saldo_costo_unitario=costo_unitario_base,
-            saldo_costo_total=(cantidad_actual - cantidad_necesaria) * costo_unitario_base,
-            referencia=referencia_truncada
-        )
-        db.session.add(kardex_salida)
-
-        consecutivo = generar_consecutivo()
-        movimiento = RegistroMovimientos(
-            idcliente=idcliente,
-            consecutivo=consecutivo,
-            tipo_movimiento='SALIDA',
-            producto_id=material.producto_base_id,
-            bodega_origen_id=bodega_id,
-            cantidad=cantidad_necesaria,
-            fecha=fecha,
-            descripcion=referencia_truncada,
-            costo_unitario=costo_unitario_base,
-            costo_total=costo_unitario_base * cantidad_necesaria
-        )
-        db.session.add(movimiento)
-
-        detalle = DetalleProduccion(
-            idcliente=idcliente,
-            orden_produccion_id=orden_id,
-            producto_base_id=material.producto_base_id,
-            cantidad_consumida=cantidad_necesaria,
-            cantidad_producida=0,
-            bodega_destino_id=bodega_id,
-            fecha_registro=fecha
-        )
-        db.session.add(detalle)
-        logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_necesaria}")
-
-    costo_unitario_compuesto = costo_total / float(cantidad) if cantidad > 0 else 0.0
-
-    # Registrar entrada del producto compuesto
-    inventario = EstadoInventario.query.filter_by(
-        producto_id=producto_compuesto_id,
-        bodega_id=bodega_id,
-        idcliente=idcliente
-    ).first()
-    if not inventario:
-        inventario = EstadoInventario(
-            producto_id=producto_compuesto_id,
-            bodega_id=bodega_id,
-            idcliente=idcliente,
-            cantidad=0.0,
-            costo_unitario=costo_unitario_compuesto,
-            costo_total=0.0,
-            ultima_actualizacion=fecha
-        )
-        db.session.add(inventario)
-
-    inventario.cantidad = float(inventario.cantidad) + float(cantidad)
-    inventario.costo_unitario = costo_unitario_compuesto
-    inventario.costo_total = float(inventario.cantidad) * costo_unitario_compuesto
-    inventario.ultima_actualizacion = fecha
-
-    ultimo_kardex = Kardex.query.filter_by(
-        producto_id=producto_compuesto_id,
-        idcliente=idcliente,
-        bodega_destino_id=bodega_id
-    ).order_by(Kardex.fecha.desc()).first()
-    referencia_truncada = f"Producción de {producto_compuesto.nombre}"[:100]  # Truncar a 100 caracteres
-    kardex = Kardex(
-        idcliente=idcliente,
-        producto_id=producto_compuesto_id,
-        bodega_destino_id=bodega_id,
-        tipo_movimiento='ENTRADA',
-        cantidad=cantidad,
-        costo_unitario=costo_unitario_compuesto,
-        costo_total=costo_unitario_compuesto * cantidad,
-        fecha=fecha,
-        referencia=referencia_truncada,
-        saldo_cantidad=(float(ultimo_kardex.saldo_cantidad) + cantidad) if ultimo_kardex else cantidad,
-        saldo_costo_unitario=costo_unitario_compuesto,
-        saldo_costo_total=((float(ultimo_kardex.saldo_costo_total) + (costo_unitario_compuesto * cantidad)) if ultimo_kardex else (costo_unitario_compuesto * cantidad))
-    )
-    db.session.add(kardex)
-
-    consecutivo = generar_consecutivo()
-    movimiento = RegistroMovimientos(
-        idcliente=idcliente,
-        consecutivo=consecutivo,
-        tipo_movimiento='ENTRADA',
-        producto_id=producto_compuesto_id,
-        bodega_destino_id=bodega_id,
-        cantidad=cantidad,
-        fecha=fecha,
-        descripcion=referencia_truncada,
-        costo_unitario=costo_unitario_compuesto,
-        costo_total=costo_unitario_compuesto * cantidad
-    )
-    db.session.add(movimiento)
-
-    logger.debug(f"Registrada entrada para producto_compuesto_id={producto_compuesto_id}, cantidad={cantidad}, costo_unitario={costo_unitario_compuesto}")
-
-    return costo_unitario_compuesto
+        # No commit aquí, se hace en el endpoint
+    except Exception as e:
+        print(f"Error al actualizar estado_inventario: {str(e)}")
+        raise  # Propagar error al endpoint
 
 
 # Función auxiliar para verificar permisos
@@ -433,32 +274,24 @@ def has_permission(claims, seccion, subseccion, permiso):
         return True
     permisos = claims.get('permisos', [])
     logger.info(f"Permisos en claims: {permisos}")
-    for p in permisos:
-        if p['seccion'] != seccion:
-            continue
-        if subseccion and p['subseccion'] != subseccion:
-            continue
-        if not subseccion and p['subseccion']:
-            continue
-        if p['permiso'] == permiso:
-            logger.info(f"Permiso exacto encontrado: {p}")
-            return True
-        if permiso == 'ver' and p['permiso'] == 'editar':  # Permitir 'editar' para 'ver'
-            logger.info(f"Permiso 'editar' cubre 'ver': {p}")
-            return True
-    logger.info(f"Resultado de verificación: False")
-    return False
+    has_perm = any(
+        p['seccion'] == seccion and 
+        (p['subseccion'] == subseccion or (not subseccion and not p['subseccion'])) and 
+        p['permiso'] == permiso 
+        for p in permisos
+    )
+    logger.info(f"Resultado de verificación: {has_perm}")
+    return has_perm
 
 # Función para generar consecutivo que escribe en tabla registro_movimientos
 def generar_consecutivo():
-    """Genera un consecutivo incremental único para registro_movimientos."""
-    with db.session.no_autoflush:
-        ultimo_consecutivo = db.session.query(
-            db.func.max(db.cast(db.func.regexp_replace(RegistroMovimientos.consecutivo, '[^0-9]', ''), db.Integer))
-        ).filter(RegistroMovimientos.consecutivo.op('~')('^T[0-9]+$')).scalar() or 0
-        nuevo_consecutivo = f"T{(ultimo_consecutivo + 1):05d}"
-        logger.debug(f"Generado consecutivo: {nuevo_consecutivo}")
-        return nuevo_consecutivo
+    ultimo_consecutivo = db.session.query(
+        db.func.max(db.cast(RegistroMovimientos.consecutivo, db.String))
+    ).scalar() or "T00000"
+    try:
+        return f"T{int(ultimo_consecutivo[1:]) + 1:05d}"
+    except ValueError:
+        return "T00001"
 
 # Función auxiliar para texto envuelto (sin cambios)
 def draw_wrapped_text_ajuste(pdf, x, y, text, max_width):
@@ -504,418 +337,6 @@ def draw_wrapped_text_traslado(pdf, x, y, text, max_width):
     return y - (len(lines) * 15)
 
 
-# Se usa con los endpoints de la pagina SyncConfig.vue
-def get_bodegas():
-    try:
-        claims = get_jwt()
-        idcliente = claims.get('idcliente')
-        if not idcliente:
-            logger.error("No se encontró idcliente en los claims")
-            return jsonify({"error": "Cliente no encontrado en el token"}), 401
-
-        if not has_permission(claims, 'parametrizacion', 'sync_config', 'editar'):
-            logger.error("Usuario no autorizado para acceder a /bodegas")
-            return jsonify({"error": "No autorizado"}), 403
-
-        bodegas = Bodega.query.filter_by(idcliente=idcliente).all()
-        result = [{"id": b.id, "nombre": b.nombre} for b in bodegas]
-        logger.info(f"Bodegas obtenidas para idcliente {idcliente}: {result}")
-        return jsonify(result), 200
-    except Exception as e:
-        logger.error(f"Error en get_bodegas: {str(e)}")
-        return jsonify({"error": "Error interno del servidor"}), 500
-
-
-def verificar_inventario(producto_id, bodega_id, cantidad, idcliente):
-    """Verifica si hay suficiente inventario."""
-    inventario = db.session.query(EstadoInventario).filter(
-        and_(
-            EstadoInventario.producto_id == producto_id,
-            EstadoInventario.bodega_id == bodega_id,
-            EstadoInventario.idcliente == idcliente
-        )
-    ).first()
-    disponible = inventario and float(inventario.cantidad) >= float(cantidad)
-    cantidad_actual = float(inventario.cantidad) if inventario else 0.0
-    logger.debug(f"Verificando inventario: producto_id={producto_id}, bodega_id={bodega_id}, cantidad={cantidad}, disponible={disponible}, actual={cantidad_actual}")
-    return disponible, cantidad_actual
-
-
-def descontar_inventario(producto_id, bodega_id, cantidad, idcliente, referencia, fecha, skip_inventory_check=False):
-    """Descuenta inventario y registra movimientos."""
-    inventario = db.session.query(EstadoInventario).filter(
-        and_(
-            EstadoInventario.producto_id == producto_id,
-            EstadoInventario.bodega_id == bodega_id,
-            EstadoInventario.idcliente == idcliente
-        )
-    ).first()
-    
-    if not skip_inventory_check:
-        if not inventario or float(inventario.cantidad) < float(cantidad):
-            raise ValueError(f"No hay suficiente inventario para producto_id={producto_id} en bodega_id={bodega_id}")
-
-    ultimo_kardex = db.session.query(Kardex).filter(
-        and_(
-            Kardex.producto_id == producto_id,
-            Kardex.bodega_destino_id == bodega_id,
-            Kardex.idcliente == idcliente
-        )
-    ).order_by(Kardex.fecha.desc()).first()
-    costo_unitario = float(ultimo_kardex.saldo_costo_unitario) if ultimo_kardex else 0.0
-    costo_total = costo_unitario * float(cantidad)
-
-    inventario.cantidad = float(inventario.cantidad) - float(cantidad)
-    inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = fecha
-
-    saldo_cantidad = float(inventario.cantidad)
-    referencia_truncada = referencia[:100]  # Truncar a 100 caracteres
-    kardex = Kardex(
-        idcliente=idcliente,
-        producto_id=producto_id,
-        fecha=fecha,
-        tipo_movimiento='SALIDA',
-        cantidad=float(cantidad),
-        costo_unitario=costo_unitario,
-        costo_total=costo_total,
-        saldo_cantidad=saldo_cantidad,
-        saldo_costo_unitario=costo_unitario,
-        saldo_costo_total=saldo_cantidad * costo_unitario,
-        referencia=referencia_truncada,
-        bodega_origen_id=bodega_id
-    )
-    db.session.add(kardex)
-
-    consecutivo = generar_consecutivo()
-    movimiento = RegistroMovimientos(
-        idcliente=idcliente,
-        consecutivo=consecutivo,
-        tipo_movimiento='SALIDA',
-        producto_id=producto_id,
-        bodega_origen_id=bodega_id,
-        cantidad=float(cantidad),
-        fecha=fecha,
-        descripcion=referencia_truncada,
-        costo_unitario=costo_unitario,
-        costo_total=costo_total
-    )
-    db.session.add(movimiento)
-    logger.debug(f"Descontado inventario: producto_id={producto_id}, bodega_id={bodega_id}, cantidad={cantidad}, referencia={referencia_truncada}")
-
-
-def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, usuario_id, fecha, referencia):
-    """Crea una orden de producción y entrega el producto compuesto."""
-    producto = db.session.get(Producto, producto_compuesto_id)
-    if not producto:
-        raise ValueError(f"Producto {producto_compuesto_id} no encontrado")
-
-    # Generar número de orden
-    ultimo_numero = db.session.query(db.func.max(OrdenProduccion.numero_orden)).filter(
-        OrdenProduccion.idcliente == idcliente
-    ).scalar()
-    if ultimo_numero:
-        ultimo_numero_int = int(ultimo_numero.split('-')[-1])
-        nuevo_numero = f"OP-{idcliente}-{str(ultimo_numero_int + 1).zfill(8)}"
-    else:
-        nuevo_numero = f"OP-{idcliente}-00000001"
-
-    # Crear orden de producción
-    orden = OrdenProduccion(
-        idcliente=idcliente,
-        producto_compuesto_id=producto_compuesto_id,
-        cantidad_paquetes=cantidad,
-        estado='Creada',
-        bodega_produccion_id=bodega_id,
-        fecha_creacion=fecha,
-        fecha_inicio=fecha,
-        creado_por=usuario_id,
-        numero_orden=nuevo_numero,
-        en_produccion_por=usuario_id,
-        fecha_lista_para_produccion=fecha
-    )
-    db.session.add(orden)
-    db.session.flush()
-
-    logger.debug(f"Orden creada: id={orden.id}, numero_orden={nuevo_numero}, producto_id={producto_compuesto_id}")
-
-    # Procesar materiales
-    procesar_materiales(
-        producto_compuesto_id=producto_compuesto_id,
-        cantidad=cantidad,
-        bodega_id=bodega_id,
-        idcliente=idcliente,
-        orden_id=orden.id,
-        numero_orden=nuevo_numero,
-        fecha=fecha,
-        referencia=referencia
-    )
-
-    # Calcular costo unitario basado en materiales
-    costo_unitario = 0.0
-    materiales = MaterialProducto.query.filter_by(
-        producto_compuesto_id=producto_compuesto_id, idcliente=idcliente
-    ).all()
-    for material in materiales:
-        kardex = Kardex.query.filter_by(
-            producto_id=material.producto_base_id,
-            idcliente=idcliente,
-            bodega_destino_id=bodega_id
-        ).order_by(Kardex.fecha.desc()).first()
-        costo_unitario += (float(kardex.saldo_costo_unitario) if kardex else 0.0) * float(material.cantidad)
-    logger.debug(f"Costo unitario calculado para producto_id={producto_compuesto_id}: {costo_unitario}")
-
-    # Registrar entrada del producto compuesto
-    inventario = EstadoInventario.query.filter_by(
-        producto_id=producto_compuesto_id,
-        bodega_id=bodega_id,
-        idcliente=idcliente
-    ).first()
-    if not inventario:
-        inventario = EstadoInventario(
-            producto_id=producto_compuesto_id,
-            bodega_id=bodega_id,
-            idcliente=idcliente,
-            cantidad=0.0,
-            costo_unitario=costo_unitario,
-            costo_total=0.0,
-            ultima_actualizacion=fecha
-        )
-        db.session.add(inventario)
-
-    inventario.cantidad = float(inventario.cantidad) + float(cantidad)
-    inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = fecha
-
-    referencia_truncada = f"Producción de {producto.nombre}"[:100]
-    kardex = Kardex(
-        idcliente=idcliente,
-        producto_id=producto_compuesto_id,
-        bodega_destino_id=bodega_id,
-        tipo_movimiento='ENTRADA',
-        cantidad=cantidad,
-        costo_unitario=costo_unitario,
-        costo_total=costo_unitario * cantidad,
-        fecha=fecha,
-        referencia=referencia_truncada,
-        saldo_cantidad=float(inventario.cantidad),
-        saldo_costo_unitario=costo_unitario,
-        saldo_costo_total=float(inventario.cantidad) * costo_unitario
-    )
-    db.session.add(kardex)
-
-    consecutivo = generar_consecutivo()
-    movimiento = RegistroMovimientos(
-        idcliente=idcliente,
-        consecutivo=consecutivo,
-        tipo_movimiento='ENTRADA',
-        producto_id=producto_compuesto_id,
-        bodega_destino_id=bodega_id,
-        cantidad=cantidad,
-        fecha=fecha,
-        descripcion=referencia_truncada,
-        costo_unitario=costo_unitario,
-        costo_total=costo_unitario * cantidad
-    )
-    db.session.add(movimiento)
-
-    # Registrar entrega en entregas_parciales
-    entrega = EntregaParcial(
-        orden_produccion_id=orden.id,
-        cantidad_entregada=float(cantidad),
-        fecha_entrega=fecha,
-        comentario="Entrega total en bodega registrada automáticamente",
-        idcliente=idcliente,
-        usuario_id=usuario_id
-    )
-    db.session.add(entrega)
-
-    # Finalizar orden
-    orden.estado = 'Finalizada'
-    orden.fecha_finalizacion = fecha
-    orden.costo_unitario = costo_unitario
-    orden.costo_total = costo_unitario * cantidad
-    db.session.flush()
-
-    logger.debug(f"Entrega registrada: orden_id={orden.id}, cantidad_entregada={cantidad}, producto_id={producto_compuesto_id}")
-
-
-# Procesar materiales
-def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, orden_id, numero_orden, fecha, referencia):
-    """Procesa materiales recursivamente para producción."""
-    materiales = MaterialProducto.query.filter_by(
-        producto_compuesto_id=producto_compuesto_id,
-        idcliente=idcliente
-    ).all()
-    logger.debug(f"Procesando materiales para producto_compuesto_id={producto_compuesto_id}, cantidad={cantidad}, materiales={[(m.producto_base_id, m.cantidad) for m in materiales]}")
-
-    for material in materiales:
-        producto_base = db.session.get(Producto, material.producto_base_id)
-        if not producto_base:
-            raise ValueError(f"Producto base {material.producto_base_id} no encontrado")
-
-        cantidad_consumida = float(material.cantidad) * float(cantidad)
-        logger.debug(f"Material: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}, es_compuesto={producto_base.es_producto_compuesto}")
-
-        if producto_base.es_producto_compuesto:
-            # Producir el producto compuesto anidado
-            costo_unitario = producir_compuesto_anidado(
-                producto_compuesto_id=material.producto_base_id,
-                cantidad=cantidad_consumida,
-                bodega_id=bodega_id,
-                idcliente=idcliente,
-                orden_id=orden_id,
-                numero_orden=numero_orden,
-                fecha=fecha,
-                referencia=referencia
-            )
-            # Descontar el producto compuesto anidado
-            inventario = db.session.query(EstadoInventario).filter(
-                and_(
-                    EstadoInventario.producto_id == material.producto_base_id,
-                    EstadoInventario.bodega_id == bodega_id,
-                    EstadoInventario.idcliente == idcliente
-                )
-            ).first()
-            if not inventario or float(inventario.cantidad) < float(cantidad_consumida):
-                raise ValueError(f"No hay suficiente inventario para producto_base_id={material.producto_base_id} tras producción")
-
-            inventario.cantidad = float(inventario.cantidad) - float(cantidad_consumida)
-            inventario.costo_total = float(inventario.cantidad) * costo_unitario
-            inventario.ultima_actualizacion = fecha
-
-            referencia_truncada = f"Consumo de {producto_base.nombre} para orden {numero_orden}"[:100]  # Truncar a 100 caracteres
-            kardex_salida = Kardex(
-                idcliente=idcliente,
-                producto_id=material.producto_base_id,
-                bodega_origen_id=bodega_id,
-                fecha=fecha,
-                tipo_movimiento='SALIDA',
-                cantidad=cantidad_consumida,
-                costo_unitario=costo_unitario,
-                costo_total=costo_unitario * cantidad_consumida,
-                saldo_cantidad=float(inventario.cantidad),
-                saldo_costo_unitario=costo_unitario,
-                saldo_costo_total=float(inventario.cantidad) * costo_unitario,
-                referencia=referencia_truncada
-            )
-            db.session.add(kardex_salida)
-
-            consecutivo = generar_consecutivo()
-            movimiento = RegistroMovimientos(
-                idcliente=idcliente,
-                consecutivo=consecutivo,
-                tipo_movimiento='SALIDA',
-                producto_id=material.producto_base_id,
-                bodega_origen_id=bodega_id,
-                cantidad=cantidad_consumida,
-                fecha=fecha,
-                descripcion=referencia_truncada,
-                costo_unitario=costo_unitario,
-                costo_total=costo_unitario * cantidad_consumida
-            )
-            db.session.add(movimiento)
-
-            detalle = DetalleProduccion(
-                idcliente=idcliente,
-                orden_produccion_id=orden_id,
-                producto_base_id=material.producto_base_id,
-                cantidad_consumida=cantidad_consumida,
-                cantidad_producida=0,
-                bodega_destino_id=bodega_id,
-                fecha_registro=fecha
-            )
-            db.session.add(detalle)
-            logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}")
-        else:
-            # Producto base: verificar y descontar
-            disponible, cantidad_actual = verificar_inventario(material.producto_base_id, bodega_id, cantidad_consumida, idcliente)
-            if not disponible:
-                raise ValueError(f"No hay suficiente inventario para producto_base_id={material.producto_base_id}, requerido={cantidad_consumida}, disponible={cantidad_actual}")
-
-            ultimo_kardex = Kardex.query.filter(
-                and_(
-                    Kardex.producto_id == material.producto_base_id,
-                    Kardex.bodega_destino_id == bodega_id,
-                    Kardex.idcliente == idcliente
-                )
-            ).order_by(Kardex.fecha.desc()).first()
-            costo_unitario = float(ultimo_kardex.saldo_costo_unitario) if ultimo_kardex else 0.0
-            saldo_cantidad = float(ultimo_kardex.saldo_cantidad) if ultimo_kardex else 0.0
-            saldo_costo_total = float(ultimo_kardex.saldo_costo_total) if ultimo_kardex else 0.0
-
-            referencia_truncada = f"Consumo para orden {numero_orden}"[:100]  # Truncar a 100 caracteres
-            kardex_salida = Kardex(
-                idcliente=idcliente,
-                producto_id=material.producto_base_id,
-                bodega_origen_id=bodega_id,
-                fecha=fecha,
-                tipo_movimiento='SALIDA',
-                cantidad=cantidad_consumida,
-                costo_unitario=costo_unitario,
-                costo_total=costo_unitario * cantidad_consumida,
-                saldo_cantidad=saldo_cantidad - cantidad_consumida,
-                saldo_costo_unitario=costo_unitario,
-                saldo_costo_total=saldo_costo_total - (costo_unitario * cantidad_consumida),
-                referencia=referencia_truncada
-            )
-            db.session.add(kardex_salida)
-
-            consecutivo = generar_consecutivo()
-            movimiento = RegistroMovimientos(
-                idcliente=idcliente,
-                consecutivo=consecutivo,
-                tipo_movimiento='SALIDA',
-                producto_id=material.producto_base_id,
-                bodega_origen_id=bodega_id,
-                cantidad=cantidad_consumida,
-                fecha=fecha,
-                descripcion=referencia_truncada,
-                costo_unitario=costo_unitario,
-                costo_total=costo_unitario * cantidad_consumida
-            )
-            db.session.add(movimiento)
-
-            actualizar_estado_inventario(
-                material.producto_base_id,
-                bodega_id,
-                cantidad_consumida,
-                es_entrada=False,
-                orden_id=orden_id,
-                idcliente=idcliente
-            )
-
-            detalle = DetalleProduccion(
-                idcliente=idcliente,
-                orden_produccion_id=orden_id,
-                producto_base_id=material.producto_base_id,
-                cantidad_consumida=cantidad_consumida,
-                cantidad_producida=0,
-                bodega_destino_id=bodega_id,
-                fecha_registro=fecha
-            )
-            db.session.add(detalle)
-            logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}")
-
-
-def mapear_rango_horario(rango):
-    """Mapea rangos horarios HH:MM-HH:MM a MAÑANA, TARDE, NOCHE."""
-    if rango in ['MAÑANA', 'TARDE', 'NOCHE']:
-        return rango
-    try:
-        inicio, _ = rango.split('-')
-        hora_inicio = datetime.strptime(inicio, '%H:%M').hour
-        if 0 <= hora_inicio < 12:
-            return 'MAÑANA'
-        elif 12 <= hora_inicio < 18:
-            return 'TARDE'
-        else:
-            return 'NOCHE'
-    except:
-        logging.warning(f"Rango horario inválido: {rango}, se mantiene sin cambios")
-        return rango
-    
-
 # Enpooints para listar las clases de modelos registrados
 # Ruta para servir el frontend (index.html)
 @app.route('/')
@@ -941,7 +362,7 @@ def login():
     try:
         # Obtener el cuerpo de la solicitud
         data = request.get_json()
-        #logger.info(f"Datos recibidos en /login: {data}")
+        logger.info(f"Datos recibidos en /login: {data}")
 
         # Intentar obtener los campos con diferentes nombres
         username = data.get('username') or data.get('user') or data.get('usuario')
@@ -1003,7 +424,7 @@ def login():
         access_token = create_access_token(identity=user_identity, additional_claims=additional_claims)
 
         # Log del token generado para depuración
-        #logger.info(f"Token generado: {access_token}")
+        logger.info(f"Token generado: {access_token}")
 
         cursor.close()
         conn.close()
@@ -1326,22 +747,11 @@ def update_permisos(perfil_id):
     idcliente = claims.get('idcliente')
 
     if not has_permission(claims, 'parametrizacion', 'perfiles', 'editar'):
-        logger.error(f"Usuario {user_id} no autorizado para editar permisos")
         return jsonify({"error": "No autorizado"}), 403
 
     data = request.get_json()
     if not data:
-        logger.error("Faltan datos en la solicitud")
         return jsonify({"error": "Faltan datos de permisos"}), 400
-
-    # Manejar tanto {"permisos": [...]} como [...]
-    permisos_data = data.get('permisos') if isinstance(data, dict) else data
-    if not isinstance(permisos_data, list):
-        logger.error("Formato de permisos inválido: se esperaba una lista")
-        return jsonify({"error": "Formato de permisos inválido"}), 400
-
-    # Log del JSON recibido para depuración
-    logger.info(f"Datos de permisos recibidos: {permisos_data}")
 
     # Verificar que el perfil pertenece al cliente (excepto superadmin)
     if claims.get('perfilid') != 1:
@@ -1352,30 +762,14 @@ def update_permisos(perfil_id):
         cur.close()
         conn.close()
         if not perfil or perfil[0] != idcliente:
-            logger.error(f"Usuario {user_id} no autorizado para modificar perfil {perfil_id}")
             return jsonify({"error": "No autorizado para modificar este perfil"}), 403
 
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        # Eliminar permisos existentes
         cur.execute("DELETE FROM permisos WHERE idPerfil = %s", (perfil_id,))
-        
-        # Crear lista de valores, ignorando idpermiso explícitamente
-        values = [
-            (
-                perfil_id,
-                p.get('seccion'),
-                p.get('subseccion'),
-                p.get('permiso')
-            )
-            for p in permisos_data
-            if p.get('seccion') and p.get('permiso')  # Validar que seccion y permiso existan
-            and 'idpermiso' not in p  # Ignorar cualquier idpermiso
-        ]
-        
+        values = [(perfil_id, p['seccion'], p['subseccion'], p['permiso']) for p in data]
         if values:
-            logger.info(f"Valores a insertar: {values}")
             execute_values(
                 cur,
                 "INSERT INTO permisos (idPerfil, seccion, subseccion, permiso) VALUES %s",
@@ -1387,16 +781,8 @@ def update_permisos(perfil_id):
         logger.info(f"Permisos actualizados para perfil {perfil_id}: {values}")
         return jsonify({"message": "Permisos actualizados exitosamente"}), 200
     except Exception as e:
-        conn.rollback()
-        cur.close()
-        conn.close()
         logger.error(f"Error al actualizar permisos: {str(e)}")
-        if "llave duplicada viola restricción de unicidad" in str(e):
-            return jsonify({
-                "error": "Conflicto de clave primaria",
-                "detail": "El idpermiso generado ya existe. Corrige la secuencia de la base de datos."
-            }), 500
-        return jsonify({"error": "Error al actualizar permisos", "detail": str(e)}), 500
+        return jsonify({"error": "Error interno del servidor"}), 500
 
 
 # Endpoint para crear permisos en bulk
@@ -1796,153 +1182,82 @@ def toggle_usuario_estado(id):
         logger.error(f"Error al actualizar estado del usuario: {str(e)}")
         return jsonify({"error": "Error interno del servidor"}), 500
 
-
-
+# Endpoint para carga de ventas diarias
 @app.route('/upload_sales', methods=['POST'])
 @jwt_required()
 def upload_sales():
     try:
-        claims = get_jwt()
-        idcliente = claims.get('idcliente')
-        usuario_id = claims.get('sub')
-        if not idcliente:
-            logger.error("No se pudo determinar el cliente asociado")
-            return jsonify({"error": "No se pudo determinar el cliente asociado"}), 403
-        if not usuario_id:
-            logger.error("No se encontró usuario_id en el token")
-            return jsonify({"error": "No se encontró usuario_id en el token"}), 401
-
-        logger.debug(f"Iniciando upload_sales: idcliente={idcliente}, usuario_id={usuario_id}")
-
-        # Verificar configuraciones
-        config = Configuraciones.query.filter_by(idcliente=idcliente).first()
-        sincronizar = config.sync_analisis_inventario if config else False
-
-        # Validar archivo
         if 'file' not in request.files:
-            logger.error("No file provided")
             return jsonify({"error": "No file provided"}), 400
+        
         file = request.files['file']
         if not file.filename.endswith('.xlsx'):
-            logger.error("File must be an Excel (.xlsx)")
             return jsonify({"error": "File must be an Excel (.xlsx)"}), 400
 
-        # Leer Excel
         df = pd.read_excel(file, usecols=[
-            "Fecha", "Rangos Horarios", "Almacén", "Cliente",
+            "Fecha", "Rangos Horarios", "Almacén", "Cliente", 
             "Nombre Vendedor", "Descripción", "Uds.", "Importe"
         ])
-
-        # Normalizar columnas
-        df.columns = ["fecha", "rango_horarios", "almacen", "cliente",
+        df.columns = ["fecha", "rango_horarios", "almacen", "cliente", 
                       "vendedor", "descripcion", "uds", "importe"]
 
-        # Normalizar texto para preservar caracteres UTF-8
-        for col in ["rango_horarios", "vendedor", "descripcion"]:
-            df[col] = df[col].astype(str).apply(
-                lambda x: x.encode('utf-8').decode('utf-8').strip()
-            )
-
-        # Procesar datos
         df["fecha"] = pd.to_datetime(df["fecha"], errors='coerce')
-        df["uds"] = pd.to_numeric(df["uds"], errors='coerce').fillna(0).astype(float)
+        df["uds"] = pd.to_numeric(df["uds"], errors='coerce').fillna(0).astype(int)
         df["importe"] = pd.to_numeric(df["importe"], errors='coerce').fillna(0.0)
         df = df.dropna(subset=["almacen"])
-        df["rango_horarios"] = df["rango_horarios"].apply(mapear_rango_horario)
 
         if df.empty:
-            logger.error("No se encontraron registros válidos en el archivo")
             return jsonify({"error": "No se encontraron registros válidos en el archivo"}), 400
 
-        # Validar almacenes
         conn = psycopg2.connect(
             dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
             password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
-            port=app.config['DB_PORT'],
-            client_encoding='UTF8'
+            port=app.config['DB_PORT']
         )
         cursor = conn.cursor()
-        cursor.execute("SELECT data2 FROM puntosdeventa WHERE idcliente = %s AND estado = 'Activo'", (idcliente,))
-        valid_almacenes = set(row[0].strip() for row in cursor.fetchall())
 
-        # Normalizar los nombres de almacenes en el DataFrame
-        df["almacen"] = df["almacen"].astype(str).str.strip()
+        user_id = get_jwt_identity()
+        cursor.execute("SELECT idcliente FROM usuarios WHERE id = %s", (user_id,))
+        id_cliente_result = cursor.fetchone()
+        if not id_cliente_result:
+            conn.close()
+            return jsonify({"error": "Usuario no encontrado"}), 404
+        id_cliente = id_cliente_result[0]
 
-        logger.debug(f"Almacenes en Excel: {set(df['almacen'].unique())}")
-        logger.debug(f"Almacenes válidos en puntosdeventa: {valid_almacenes}")
-
+        cursor.execute("SELECT data2 FROM puntosdeventa WHERE idcliente = %s AND estado = 'Activo'", (id_cliente,))
+        valid_almacenes = set(row[0] for row in cursor.fetchall())
         invalid_almacenes = set(df["almacen"].unique()) - valid_almacenes
         if invalid_almacenes:
             conn.close()
-            logger.error(f"Almacenes no válidos: {invalid_almacenes}")
-            return jsonify({"error": f"Almacenes no válidos: {invalid_almacenes}. Almacenes esperados: {valid_almacenes}"}), 400
+            return jsonify({"error": f"Almacenes no válidos: {invalid_almacenes}"}), 400
 
-        # Validar productos solo si sincronizar=True
-        productos_dict = {}
-        if sincronizar:
-            productos = Producto.query.filter_by(idcliente=idcliente).all()
-            for p in productos:
-                nombre = p.nombre.strip()
-                if nombre in productos_dict:
-                    logger.warning(f"Nombre de producto duplicado: {nombre}, producto_id={p.id}, existente_id={productos_dict[nombre].id}")
-                productos_dict[nombre] = p
+        # Obtener mes de corte
+        cutoff_year, cutoff_month = get_cutoff(id_cliente)
 
-            invalid_productos = set(df["descripcion"].unique()) - set(productos_dict.keys())
-            if invalid_productos:
-                conn.close()
-                logger.error(f"Productos no válidos: {invalid_productos}")
-                return jsonify({"error": f"Productos no válidos: {invalid_productos}"}), 400
-
-        # Validar mes de corte
-        cutoff_year, cutoff_month = get_cutoff(idcliente)
+        # Validar que los datos estén después del mes de corte
         invalid_rows = df[
             (df["fecha"].dt.year < cutoff_year) |
             ((df["fecha"].dt.year == cutoff_year) & (df["fecha"].dt.month <= cutoff_month))
         ]
         if not invalid_rows.empty:
             conn.close()
-            logger.error(f"Datos anteriores o iguales al mes de corte ({cutoff_year}-{cutoff_month}) no permitidos")
             return jsonify({"error": f"Datos anteriores o iguales al mes de corte ({cutoff_year}-{cutoff_month}) no permitidos"}), 400
 
-        # Preparar datos para ventahistoricahora
-        data_to_insert = []
-        with no_autoflush(db.session):
-            for _, row in df.iterrows():
-                descripcion = row["descripcion"]
-                if sincronizar:
-                    producto = productos_dict.get(descripcion)
-                    if not producto:
-                        conn.rollback()
-                        conn.close()
-                        logger.error(f"Producto {descripcion} no encontrado")
-                        return jsonify({"error": f"Producto {descripcion} no encontrado"}), 400
-                    logger.debug(f"Producto seleccionado: descripcion={descripcion}, producto_id={producto.id}, nombre={producto.nombre}")
-                else:
-                    producto = None
-                    logger.debug(f"Producto no validado (sin sincronización): descripcion={descripcion}")
+        data_to_insert = [
+            (id_cliente, row["fecha"], row["rango_horarios"], row["almacen"],
+             row["cliente"], row["vendedor"], row["descripcion"], row["uds"], row["importe"])
+            for _, row in df.iterrows()
+        ]
 
-                cantidad = row["uds"]
-                almacen = row["almacen"]
-                fecha = row["fecha"].to_pydatetime()
-                data_to_insert.append((
-                    idcliente, fecha.date(), row["rango_horarios"], almacen,
-                    row["cliente"], row["vendedor"], descripcion, int(cantidad), row["importe"]
-                ))
-
-        if not data_to_insert:
-            conn.close()
-            logger.info("No hay ventas para procesar")
-            return jsonify({"message": "No hay ventas para procesar"}), 200
-
-        # Insertar en ventahistoricahora
         query = """
-            INSERT INTO ventahistoricahora (idcliente, fecha, rango_horarios, almacen,
+            INSERT INTO ventahistoricahora (idcliente, fecha, rango_horarios, almacen, 
                                             cliente, vendedor, descripcion, uds, importe)
             VALUES %s
+            ON CONFLICT DO NOTHING
         """
         execute_values(cursor, query, data_to_insert)
 
-        # Actualizar ventahistorica
+        # Actualizar ventahistorica para los meses afectados
         years_months = df.groupby([df["fecha"].dt.year, df["fecha"].dt.month]).size().index
         for year, month in years_months:
             cursor.execute("""
@@ -1960,83 +1275,19 @@ def upload_sales():
                 GROUP BY p.pdv, EXTRACT(YEAR FROM v.fecha), EXTRACT(MONTH FROM v.fecha)
                 ON CONFLICT (idcliente, pdv, año, mes) DO UPDATE
                 SET venta = EXCLUDED.venta
-            """, (idcliente, idcliente, year, month))
+            """, (id_cliente, id_cliente, year, month))
 
-        # Procesar inventario si sincronizar=True
-        if sincronizar:
-            with no_autoflush(db.session):
-                for _, row in df.iterrows():
-                    producto = productos_dict.get(row["descripcion"])
-                    cantidad = row["uds"]
-                    almacen = row["almacen"]
-                    fecha = row["fecha"].to_pydatetime()
-                    referencia = f"Venta: {row['descripcion']}"[:100]
-
-                    bodega = Bodega.query.filter_by(nombre=almacen, idcliente=idcliente).first()
-                    if not bodega:
-                        conn.rollback()
-                        conn.close()
-                        logger.error(f"Bodega {almacen} no encontrada")
-                        return jsonify({"error": f"Bodega {almacen} no encontrada"}), 400
-
-                    if producto.es_producto_compuesto:
-                        has_inventory, current_inventory = verificar_inventario(producto.id, bodega.id, cantidad, idcliente)
-                        cantidad_faltante = max(0, float(cantidad) - float(current_inventory))
-                        logger.debug(f"Producto compuesto: producto_id={producto.id}, cantidad_faltante={cantidad_faltante}, inventario_actual={current_inventory}")
-
-                        if cantidad_faltante > 0:
-                            logger.debug(f"Produciendo cantidad faltante: {cantidad_faltante} de producto_id={producto.id}")
-                            producir_y_entregar(
-                                producto_compuesto_id=producto.id,
-                                cantidad=cantidad_faltante,
-                                bodega_id=bodega.id,
-                                idcliente=idcliente,
-                                usuario_id=int(usuario_id),
-                                fecha=fecha,
-                                referencia=referencia
-                            )
-                            db.session.flush()
-
-                        descontar_inventario(
-                            producto_id=producto.id,
-                            bodega_id=bodega.id,
-                            cantidad=cantidad,
-                            idcliente=idcliente,
-                            referencia=referencia,
-                            fecha=fecha,
-                            skip_inventory_check=True
-                        )
-                    else:
-                        if not verificar_inventario(producto.id, bodega.id, cantidad, idcliente)[0]:
-                            conn.rollback()
-                            conn.close()
-                            logger.error(f"No hay suficiente inventario para producto_id={producto.id} en bodega_id={bodega.id}")
-                            return jsonify({"error": f"No hay suficiente inventario para producto_id={producto.id} en bodega_id={bodega.id}"}), 400
-                        descontar_inventario(
-                            producto_id=producto.id,
-                            bodega_id=bodega.id,
-                            cantidad=cantidad,
-                            idcliente=idcliente,
-                            referencia=referencia,
-                            fecha=fecha
-                        )
-
-        # Confirmar transacciones
         conn.commit()
         conn.close()
-        db.session.commit()
 
-        logger.info(f"Loaded {len(data_to_insert)} rows and updated ventahistorica")
         return jsonify({"message": f"Loaded {len(data_to_insert)} rows and updated ventahistorica"}), 200
 
     except Exception as e:
         if 'conn' in locals():
             conn.rollback()
             conn.close()
-        db.session.rollback()
-        logger.error(f"Error en upload_sales: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
+    
 
 
 @app.route('/upload_sales_OLD', methods=['POST'])
@@ -2843,7 +2094,7 @@ def get_monthly_performance():
         if 'conn' in locals():
             conn.close()
         return jsonify({"error": str(e)}), 500
-    
+
 
 @app.route('/available-years', methods=['GET'])
 @jwt_required()
@@ -3930,7 +3181,7 @@ def create_point_of_sale():
         )
         cursor = conn.cursor()
 
-        # Obtener id_cliente del usuario autenticado
+        # Reemplazo de user_id = 1 con autenticación
         user_id = get_jwt_identity()
         cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
         id_cliente_result = cursor.fetchone()
@@ -3939,24 +3190,14 @@ def create_point_of_sale():
             return jsonify({"error": "Usuario no encontrado"}), 404
         id_cliente = id_cliente_result[0]
 
-        # Obtener claims para verificar permisos
-        claims = get_jwt()
-        if not has_permission(claims, 'cargue', 'puntos_de_venta', 'editar'):
-            conn.close()
-            return jsonify({"error": "No tienes permiso para crear puntos de venta"}), 403
-
-        # Validar datos enviados
         data = request.get_json()
-        if not data or not all(key in data for key in ['data1', 'data2', 'pdv', 'estado']):
-            conn.close()
-            return jsonify({"error": "Faltan datos requeridos (data1, data2, pdv, estado)"}), 400
+        if not data or not all(key in data for key in ['idcliente', 'data1', 'data2', 'pdv', 'estado']):
+            return jsonify({"error": "Faltan datos requeridos"}), 400
 
         # Validar que el estado sea "Activo" o "Inactivo"
         if data['estado'] not in ['Activo', 'Inactivo']:
-            conn.close()
             return jsonify({"error": "Estado inválido. Debe ser 'Activo' o 'Inactivo'"}), 400
 
-        # Insertar nuevo punto de venta
         query = """
             INSERT INTO PuntosDeVenta (IdCliente, Data1, Data2, PDV, Estado)
             VALUES (%s, %s, %s, %s, %s)
@@ -4214,7 +3455,6 @@ def gestionar_productos_materiales():
         } for p in productos],
         'total': total
     })
-
 
 @app.route('/inventory/materiales-producto', methods=['POST'])
 @jwt_required()
@@ -4492,7 +3732,6 @@ def cargar_productos_csv():
         return jsonify({'error': f'Ocurrió un error al cargar productos desde CSV: {str(e)}'}), 500
 
 
-
 @app.route('/inventory/productos/actualizar-csv', methods=['POST'])
 @jwt_required()
 def actualizar_productos_csv():
@@ -4751,7 +3990,6 @@ def eliminar_producto(producto_id):
         return jsonify({'error': 'Error al eliminar el producto'}), 500
 
 
-
 @app.route('/inventory/materiales-producto/<int:producto_id>', methods=['GET'])
 @jwt_required()
 def obtener_materiales_producto(producto_id):
@@ -4821,7 +4059,6 @@ def eliminar_material(material_id):
         return jsonify({'error': 'Error al eliminar el material'}), 500
 
 
-
 # ENDPOINTS DEL MODULO DE BODEGAS
 @app.route('/inventory/bodegas', methods=['GET', 'POST'])
 @jwt_required()
@@ -4879,37 +4116,25 @@ def modificar_bodega(id):
 @app.route('/inventory/cargar-compras', methods=['POST'])
 @jwt_required()
 def cargar_compras():
-    logger.info("Solicitud recibida en /inventory/cargar-compras")
-    
     claims = get_jwt()
     idcliente = claims.get('idcliente')
-    if not idcliente:
-        logger.error("No se encontró idcliente en los claims")
-        return jsonify({'message': 'Cliente no encontrado en el token'}), 401
 
     if not has_permission(claims, 'inventario', 'compras', 'editar'):
-        logger.error("Usuario no autorizado para cargar compras")
-        return jsonify({'message': 'No autorizado'}), 403
+        return jsonify({'error': 'No autorizado'}), 403
 
     if 'file' not in request.files:
-        logger.error("No se encontró el archivo en la solicitud")
         return jsonify({'message': 'No se encontró el archivo en la solicitud'}), 400
 
     file = request.files['file']
-    logger.info(f"Archivo recibido: {file.filename}")
-    
     if file.filename == '':
-        logger.error("No se seleccionó ningún archivo")
         return jsonify({'message': 'No se seleccionó ningún archivo'}), 400
 
     stream = TextIOWrapper(file.stream, encoding='utf-8')
     reader = csv.DictReader(stream)
     
     expected_columns = ['factura', 'codigo', 'nombre', 'cantidad', 'bodega', 'contenedor', 'fecha_ingreso', 'costo_unitario']
-    logger.info(f"Columnas encontradas en el CSV: {reader.fieldnames}")
     missing_columns = [col for col in expected_columns if col not in reader.fieldnames]
     if missing_columns:
-        logger.error(f"Faltan las columnas: {', '.join(missing_columns)}")
         return jsonify({'message': f'Faltan las columnas: {", ".join(missing_columns)}'}), 400
 
     errores = []
@@ -4943,9 +4168,9 @@ def cargar_compras():
                 continue
 
             inventario_previo = InventarioBodega.query.filter_by(producto_id=producto.id, idcliente=idcliente).first()
-            descripcion = f"Cargue inicial con Factura de compra {factura}" if not inventario_previo else f"Ingreso de nueva mercancía con Factura de compra {factura}"
+            descripcion = f"Ingreso de nueva mercancía con Factura de compra {factura}" if inventario_previo else f"Cargue inicial con Factura de compra {factura}"
 
-            # Actualizar inventario_bodega
+            # Registrar en inventario_bodega
             inventario = InventarioBodega.query.filter_by(producto_id=producto.id, bodega_id=bodega_obj.id, idcliente=idcliente).first()
             if not inventario:
                 inventario = InventarioBodega(
@@ -4969,7 +4194,29 @@ def cargar_compras():
                 inventario.contenedor = contenedor
                 inventario.fecha_ingreso = fecha_ingreso
 
-            # Verificar duplicados
+            # Actualizar o crear en estado_inventario
+            estado_inv = EstadoInventario.query.filter_by(
+                idcliente=idcliente,
+                producto_id=producto.id,
+                bodega_id=bodega_obj.id
+            ).first()
+            if not estado_inv:
+                estado_inv = EstadoInventario(
+                    idcliente=idcliente,
+                    producto_id=producto.id,
+                    bodega_id=bodega_obj.id,
+                    cantidad=0,
+                    ultima_actualizacion=fecha_ingreso,
+                    costo_unitario=costo_unitario,
+                    costo_total=0
+                )
+                db.session.add(estado_inv)
+            estado_inv.cantidad += cantidad
+            estado_inv.costo_unitario = costo_unitario  # O promedio ponderado si prefieres
+            estado_inv.costo_total = estado_inv.cantidad * estado_inv.costo_unitario
+            estado_inv.ultima_actualizacion = fecha_ingreso
+
+            # Verificar si el movimiento ya existe
             movimiento_existente = RegistroMovimientos.query.filter_by(
                 idcliente=idcliente,
                 producto_id=producto.id,
@@ -4981,31 +4228,7 @@ def cargar_compras():
                 errores.append(f"Fila {index}: La factura {factura} ya fue procesada para el producto {codigo} en {bodega}.")
                 continue
 
-            # Actualizar estado_inventario
-            estado_inventario = EstadoInventario.query.filter_by(
-                idcliente=idcliente,
-                producto_id=producto.id,
-                bodega_id=bodega_obj.id
-            ).first()
-            if not estado_inventario:
-                estado_inventario = EstadoInventario(
-                    idcliente=idcliente,
-                    producto_id=producto.id,
-                    bodega_id=bodega_obj.id,
-                    cantidad=cantidad,
-                    ultima_actualizacion=fecha_ingreso,
-                    costo_unitario=costo_unitario,
-                    costo_total=cantidad * costo_unitario
-                )
-                db.session.add(estado_inventario)
-            else:
-                costo_total_nuevo = (float(estado_inventario.cantidad) * float(estado_inventario.costo_unitario)) + (cantidad * costo_unitario)
-                estado_inventario.cantidad += cantidad
-                estado_inventario.costo_unitario = costo_total_nuevo / estado_inventario.cantidad if estado_inventario.cantidad > 0 else costo_unitario
-                estado_inventario.costo_total = estado_inventario.cantidad * estado_inventario.costo_unitario
-                estado_inventario.ultima_actualizacion = fecha_ingreso
-
-            # Generar consecutivo
+            # Generar nuevo consecutivo
             ultimo_consecutivo = db.session.query(
                 db.func.max(db.cast(RegistroMovimientos.consecutivo, db.String))
             ).filter_by(idcliente=idcliente).scalar() or "T00000"
@@ -5036,9 +4259,9 @@ def cargar_compras():
                 cantidad=cantidad,
                 costo_unitario=costo_unitario,
                 costo_total=cantidad * costo_unitario,
-                saldo_cantidad=estado_inventario.cantidad,
-                saldo_costo_unitario=estado_inventario.costo_unitario,
-                saldo_costo_total=estado_inventario.costo_total,
+                saldo_cantidad=estado_inv.cantidad,  # Usar cantidad de estado_inventario
+                saldo_costo_unitario=estado_inv.costo_unitario,
+                saldo_costo_total=estado_inv.costo_total,  # Corregido
                 referencia=descripcion
             )
             db.session.add(kardex_entry)
@@ -5048,13 +4271,10 @@ def cargar_compras():
         except Exception as e:
             db.session.rollback()
             errores.append(f"Fila {index}: Error al procesar la fila ({str(e)})")
-            logger.error(f"Fila {index}: Error al procesar - {str(e)}")
-
+    
     if errores:
-        logger.error(f"Errores al procesar el archivo: {errores}")
         return jsonify({'message': 'Errores al procesar el archivo', 'errors': errores}), 400
 
-    logger.info("Compras cargadas correctamente")
     return jsonify({'message': 'Compras cargadas correctamente'}), 201
 
 
@@ -5196,56 +4416,30 @@ def detalle_factura():
 @app.route('/inventory/ventas', methods=['POST'])
 @jwt_required()
 def cargar_ventas():
-    logger.info("Solicitud recibida en /inventory/ventas")
-    
     claims = get_jwt()
     idcliente = claims.get('idcliente')
-    if not idcliente:
-        logger.error("No se encontró idcliente en los claims")
-        return jsonify({'message': 'Cliente no encontrado en el token'}), 401
 
     if not has_permission(claims, 'inventario', 'ventas', 'editar'):
-        logger.error("Usuario no autorizado para cargar ventas")
-        return jsonify({'message': 'No autorizado'}), 403
-
-    # Verificar configuración de sincronización
-    config = Configuraciones.query.filter_by(idcliente=idcliente).first()
-    sync_inventario = config.sync_analisis_inventario if config else False
-    logger.info(f"Sincronización con Análisis: {sync_inventario}")
-    
-    if sync_inventario:
-        logger.error("Cargue de ventas bloqueado porque sync_analisis_inventario está activo")
-        return jsonify({
-            'message': 'El cargue de ventas debe realizarse desde la página de Cargar Ventas Diarias del módulo de Análisis debido a la sincronización activa.'
-        }), 403
+        return jsonify({'error': 'No autorizado'}), 403
 
     if 'file' not in request.files:
-        logger.error("No se encontró el archivo en la solicitud")
         return jsonify({'message': 'Archivo no encontrado'}), 400
 
     file = request.files['file']
-    logger.info(f"Archivo recibido: {file.filename}")
-    
     if file.filename == '':
-        logger.error("No se seleccionó ningún archivo")
         return jsonify({'message': 'No se seleccionó ningún archivo'}), 400
 
     stream = TextIOWrapper(file.stream, encoding='utf-8')
     reader = csv.DictReader(stream)
-    
+
     required_columns = ['factura', 'codigo', 'nombre', 'cantidad', 'fecha_venta', 'bodega']
-    logger.info(f"Columnas encontradas en el CSV: {reader.fieldnames}")
     missing_columns = [col for col in required_columns if col not in reader.fieldnames]
     if missing_columns:
-        logger.error(f"Faltan las columnas obligatorias: {', '.join(missing_columns)}")
         return jsonify({'message': f'Faltan las columnas obligatorias: {", ".join(missing_columns)}'}), 400
 
     has_precio_unitario = 'precio_unitario' in reader.fieldnames
-    ventas_a_registrar = []
-    movimientos_a_registrar = []
-    kardex_a_registrar = []
-    errores = []
 
+    errores = []
     for index, row in enumerate(reader, start=1):
         try:
             factura = row['factura'].strip()
@@ -5265,16 +4459,18 @@ def cargar_ventas():
 
             producto = Producto.query.filter_by(codigo=codigo, idcliente=idcliente).first()
             if not producto:
-                errores.append(f"Fila {index}: Producto con código {codigo} no encontrado.")
+                errores.append(f"Fila {index}: Producto con código {codigo} no encontrado")
                 continue
 
             bodega = Bodega.query.filter_by(nombre=bodega_nombre, idcliente=idcliente).first()
             if not bodega:
-                errores.append(f"Fila {index}: Bodega con nombre {bodega_nombre} no encontrada.")
+                errores.append(f"Fila {index}: Bodega con nombre {bodega_nombre} no encontrada")
                 continue
 
-            # Calcular saldo disponible hasta la fecha de la venta
+            # Calcular saldo disponible desde kardex
             saldo_disponible = 0
+            costo_unitario_promedio = 0
+            saldo_costo_total = 0
             movimientos_previos = Kardex.query.filter(
                 Kardex.producto_id == producto.id,
                 Kardex.idcliente == idcliente,
@@ -5284,64 +4480,63 @@ def cargar_ventas():
             for mov in movimientos_previos:
                 if mov.tipo_movimiento == 'ENTRADA' and mov.bodega_destino_id == bodega.id:
                     saldo_disponible += mov.cantidad
+                    saldo_costo_total += mov.costo_total
                 elif mov.tipo_movimiento == 'SALIDA' and mov.bodega_origen_id == bodega.id:
                     saldo_disponible -= mov.cantidad
+                    saldo_costo_total -= mov.costo_total
+                if saldo_disponible > 0:
+                    costo_unitario_promedio = saldo_costo_total / saldo_disponible
+                else:
+                    costo_unitario_promedio = 0
 
             if saldo_disponible < cantidad:
                 errores.append(f"Fila {index}: Inventario insuficiente para el producto {codigo} en {bodega_nombre} a la fecha {fecha_venta}. Stock disponible: {saldo_disponible}")
                 continue
 
-            # Obtener costo unitario del último Kardex
-            ultimo_kardex = Kardex.query.filter(
-                Kardex.producto_id == producto.id,
-                Kardex.idcliente == idcliente,
-                Kardex.bodega_origen_id == bodega.id,
-                Kardex.fecha <= fecha_venta
-            ).order_by(Kardex.fecha.desc()).first()
-
-            if ultimo_kardex:
-                costo_unitario = ultimo_kardex.saldo_costo_unitario
-                saldo_cantidad_antes = ultimo_kardex.saldo_cantidad
-                saldo_costo_total_antes = ultimo_kardex.saldo_costo_total
-            else:
+            if costo_unitario_promedio == 0:
+                # Intentar obtener costo de estado_inventario
                 estado_inventario = EstadoInventario.query.filter_by(
-                    idcliente=idcliente,
                     producto_id=producto.id,
-                    bodega_id=bodega.id
+                    bodega_id=bodega.id,
+                    idcliente=idcliente
                 ).first()
                 if not estado_inventario or not estado_inventario.costo_unitario:
                     errores.append(f"Fila {index}: No hay costo unitario inicial para el producto {codigo} en {bodega_nombre}")
                     continue
-                costo_unitario = estado_inventario.costo_unitario
-                saldo_cantidad_antes = estado_inventario.cantidad
-                saldo_costo_total_antes = estado_inventario.costo_total
+                costo_unitario_promedio = estado_inventario.costo_unitario
+                saldo_disponible = estado_inventario.cantidad
+                saldo_costo_total = estado_inventario.costo_total
 
-            costo_total = cantidad * costo_unitario
-            saldo_cantidad = saldo_cantidad_antes - cantidad
-            saldo_costo_total = saldo_costo_total_antes - costo_total
+            costo_total = cantidad * costo_unitario_promedio
+            saldo_cantidad = saldo_disponible - cantidad
+            saldo_costo_total -= costo_total
 
-            # Actualizar estado_inventario
             estado_inventario = EstadoInventario.query.filter_by(
-                idcliente=idcliente,
                 producto_id=producto.id,
-                bodega_id=bodega.id
+                bodega_id=bodega.id,
+                idcliente=idcliente
             ).first()
             if estado_inventario:
-                estado_inventario.cantidad = saldo_cantidad
-                estado_inventario.costo_total = saldo_costo_total
+                estado_inventario.cantidad -= cantidad
                 estado_inventario.ultima_actualizacion = fecha_venta
+                estado_inventario.costo_total = estado_inventario.cantidad * estado_inventario.costo_unitario
             else:
-                errores.append(f"Fila {index}: No se encontró estado de inventario para {codigo} en {bodega_nombre}")
-                continue
+                estado_inventario = EstadoInventario(
+                    idcliente=idcliente,
+                    producto_id=producto.id,
+                    bodega_id=bodega.id,
+                    cantidad=saldo_cantidad,
+                    ultima_actualizacion=fecha_venta,
+                    costo_unitario=costo_unitario_promedio,
+                    costo_total=saldo_costo_total
+                )
+                db.session.add(estado_inventario)
 
-            # Generar consecutivo
             ultimo_consecutivo = db.session.query(
                 db.func.max(db.cast(RegistroMovimientos.consecutivo, db.String))
             ).filter_by(idcliente=idcliente).scalar() or "T00000"
             nuevo_consecutivo = f"T{int(ultimo_consecutivo[1:]) + 1:05d}"
 
-            # Registrar en registro_movimientos
-            descripcion_mov = f"Salida de mercancía por venta con Factura {factura} desde {bodega_nombre}"
             nuevo_movimiento = RegistroMovimientos(
                 idcliente=idcliente,
                 consecutivo=nuevo_consecutivo,
@@ -5351,13 +4546,12 @@ def cargar_ventas():
                 bodega_destino_id=None,
                 cantidad=cantidad,
                 fecha=fecha_venta,
-                descripcion=descripcion_mov,
-                costo_unitario=costo_unitario,
+                descripcion=f"Salida de mercancía por venta con Factura {factura} desde {bodega_nombre}",
+                costo_unitario=costo_unitario_promedio,
                 costo_total=costo_total
             )
-            movimientos_a_registrar.append(nuevo_movimiento)
+            db.session.add(nuevo_movimiento)
 
-            # Registrar en kardex
             kardex_salida = Kardex(
                 idcliente=idcliente,
                 producto_id=producto.id,
@@ -5365,17 +4559,16 @@ def cargar_ventas():
                 bodega_origen_id=bodega.id,
                 bodega_destino_id=None,
                 cantidad=cantidad,
-                costo_unitario=costo_unitario,
+                costo_unitario=costo_unitario_promedio,
                 costo_total=costo_total,
                 fecha=fecha_venta,
-                referencia=descripcion_mov,
+                referencia=f"Salida de mercancía por venta con Factura {factura} desde {bodega_nombre}",
                 saldo_cantidad=saldo_cantidad,
-                saldo_costo_unitario=costo_unitario if saldo_cantidad > 0 else 0.0,
+                saldo_costo_unitario=costo_unitario_promedio if saldo_cantidad > 0 else 0.0,
                 saldo_costo_total=saldo_costo_total
             )
-            kardex_a_registrar.append(kardex_salida)
+            db.session.add(kardex_salida)
 
-            # Registrar en ventas
             venta = Venta(
                 idcliente=idcliente,
                 factura=factura,
@@ -5386,31 +4579,18 @@ def cargar_ventas():
                 bodega_id=bodega.id,
                 precio_unitario=precio_unitario
             )
-            ventas_a_registrar.append(venta)
+            db.session.add(venta)
+
+            db.session.commit()
 
         except Exception as e:
+            db.session.rollback()
             errores.append(f"Fila {index}: Error procesando la fila ({str(e)})")
 
     if errores:
-        logger.error(f"Errores al procesar el archivo: {errores}")
         return jsonify({'message': 'Errores al procesar el archivo', 'errors': errores}), 400
 
-    try:
-        # Registrar todas las ventas y movimientos válidos
-        for venta in ventas_a_registrar:
-            db.session.add(venta)
-        for movimiento in movimientos_a_registrar:
-            db.session.add(movimiento)
-        for kardex in kardex_a_registrar:
-            db.session.add(kardex)
-        db.session.commit()
-        logger.info("Ventas cargadas correctamente")
-        return jsonify({'message': 'Ventas cargadas correctamente'}), 201
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error al guardar en la base de datos: {str(e)}")
-        return jsonify({'message': 'Error al guardar las ventas', 'errors': [str(e)]}), 500
-
+    return jsonify({'message': 'Ventas cargadas correctamente'}), 201
 
 
 @app.route('/inventory/ventas-facturas', methods=['GET'])
@@ -6151,6 +5331,7 @@ def consultar_kardex():
         if not codigo_producto or not fecha_inicio or not fecha_fin:
             return jsonify({'message': 'Debe proporcionar el código del producto y el rango de fechas'}), 400
 
+        # Convertir fechas a datetime en hora local de Colombia (naive, como en la base de datos)
         try:
             fecha_inicio_dt = datetime.strptime(fecha_inicio, '%Y-%m-%d')
             fecha_fin_dt = datetime.strptime(fecha_fin, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
@@ -6168,18 +5349,6 @@ def consultar_kardex():
             bodegas_ids = [b.id for b in bodegas_query]
             if not bodegas_ids:
                 return jsonify({'message': 'Ninguna de las bodegas especificadas fue encontrada'}), 404
-
-        # Calcular CPP Global (promedio de costo_unitario de entradas)
-        cpp_global_query = db.session.query(db.func.avg(Kardex.costo_unitario)).filter(
-            Kardex.producto_id == producto.id,
-            Kardex.idcliente == idcliente,
-            Kardex.tipo_movimiento == 'ENTRADA'
-        )
-        if bodegas_ids:
-            cpp_global_query = cpp_global_query.filter(
-                Kardex.bodega_destino_id.in_(bodegas_ids)
-            )
-        cpp_global = cpp_global_query.scalar() or 0.0
 
         # Calcular saldo inicial
         saldo_bodegas = {}
@@ -6210,6 +5379,7 @@ def consultar_kardex():
                     saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + movimiento.cantidad
                     saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + (movimiento.costo_total or 0)
 
+        # Preparar saldos iniciales por bodega
         saldo_bodegas_nombres = {}
         total_saldo_global = 0
         total_costo_global = 0
@@ -6225,6 +5395,8 @@ def consultar_kardex():
                 }
                 total_saldo_global += saldo
                 total_costo_global += costo_total
+
+        saldo_costo_unitario_global = total_costo_global / total_saldo_global if total_saldo_global > 0 else 0.0
 
         # Consultar movimientos en el rango
         movimientos_query = Kardex.query.filter(
@@ -6242,6 +5414,8 @@ def consultar_kardex():
         kardex = []
         saldo_actual = saldo_bodegas.copy()
         saldo_costo_total_actual = saldo_costo_total_bodegas.copy()
+        total_saldo_global_actual = total_saldo_global
+        total_costo_global_actual = total_costo_global
 
         # Registrar saldos iniciales
         for bodega_nombre, saldos in saldo_bodegas_nombres.items():
@@ -6255,7 +5429,7 @@ def consultar_kardex():
                 'costo_total': saldos['costo_total'],
                 'saldo_costo_unitario': saldos['costo_unitario'],
                 'saldo_costo_total': saldos['costo_total'],
-                'saldo_costo_unitario_global': float(cpp_global),
+                'saldo_costo_unitario_global': saldo_costo_unitario_global,
                 'descripcion': 'Saldo inicial antes del rango de consulta'
             })
 
@@ -6269,11 +5443,14 @@ def consultar_kardex():
                 saldo_actual[movimiento.bodega_destino_id] = saldo_antes + movimiento.cantidad
                 costo_total_movimiento = movimiento.costo_total or (movimiento.cantidad * movimiento.costo_unitario)
                 saldo_costo_total_actual[movimiento.bodega_destino_id] = costo_total_antes + costo_total_movimiento
+                total_saldo_global_actual += movimiento.cantidad
+                total_costo_global_actual += costo_total_movimiento
 
                 saldo_costo_unitario_bodega = (
                     saldo_costo_total_actual[movimiento.bodega_destino_id] /
                     saldo_actual[movimiento.bodega_destino_id] if saldo_actual[movimiento.bodega_destino_id] > 0 else 0.0
                 )
+                saldo_costo_unitario_global = total_costo_global_actual / total_saldo_global_actual if total_saldo_global_actual > 0 else 0.0
 
                 kardex.append({
                     'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
@@ -6285,7 +5462,7 @@ def consultar_kardex():
                     'costo_total': float(costo_total_movimiento),
                     'saldo_costo_unitario': float(saldo_costo_unitario_bodega),
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
-                    'saldo_costo_unitario_global': float(cpp_global),
+                    'saldo_costo_unitario_global': float(saldo_costo_unitario_global),
                     'descripcion': movimiento.referencia or 'Entrada registrada'
                 })
 
@@ -6293,17 +5470,21 @@ def consultar_kardex():
                 bodega_origen = movimiento.bodega_origen.nombre if movimiento.bodega_origen else None
                 saldo_antes = saldo_actual.get(movimiento.bodega_origen_id, 0)
                 costo_total_antes = saldo_costo_total_actual.get(movimiento.bodega_origen_id, 0)
-                costo_unitario_antes = costo_total_antes / saldo_antes if saldo_antes > 0 else 0.0  # Cambiado para usar 0.0 si saldo_antes <= 0
+                costo_unitario_antes = costo_total_antes / saldo_antes if saldo_antes > 0 else 0.0
 
                 saldo_actual[movimiento.bodega_origen_id] = saldo_antes - movimiento.cantidad
                 costo_total_movimiento = movimiento.costo_total or (movimiento.cantidad * (movimiento.costo_unitario or costo_unitario_antes))
                 saldo_costo_total_actual[movimiento.bodega_origen_id] = costo_total_antes - costo_total_movimiento
+                total_saldo_global_actual -= movimiento.cantidad
+                total_costo_global_actual -= costo_total_movimiento
 
                 saldo_costo_unitario_bodega = (
                     saldo_costo_total_actual[movimiento.bodega_origen_id] /
-                    saldo_actual[movimiento.bodega_origen_id] if saldo_actual[movimiento.bodega_origen_id] > 0 else 0.0  # Cambiado para usar 0.0 si saldo <= 0
+                    saldo_actual[movimiento.bodega_origen_id] if saldo_actual[movimiento.bodega_origen_id] > 0 else costo_unitario_antes
                 )
-                saldo_costo_total = float(saldo_costo_total_actual[movimiento.bodega_origen_id])  # Eliminamos la condición para asegurar que siempre sea un número
+                saldo_costo_unitario_global = total_costo_global_actual / total_saldo_global_actual if total_saldo_global_actual > 0 else 0.0
+
+                saldo_costo_total = float(saldo_costo_total_actual[movimiento.bodega_origen_id]) if saldo_actual[movimiento.bodega_origen_id] > 0 else 0.0
 
                 kardex.append({
                     'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
@@ -6314,8 +5495,8 @@ def consultar_kardex():
                     'costo_unitario': float(movimiento.costo_unitario or costo_unitario_antes),
                     'costo_total': float(costo_total_movimiento),
                     'saldo_costo_unitario': float(saldo_costo_unitario_bodega),
-                    'saldo_costo_total': float(saldo_costo_total),  # Aseguramos que sea un número
-                    'saldo_costo_unitario_global': float(cpp_global),
+                    'saldo_costo_total': saldo_costo_total,
+                    'saldo_costo_unitario_global': float(saldo_costo_unitario_global),
                     'descripcion': movimiento.referencia or 'Salida registrada'
                 })
 
@@ -6343,7 +5524,7 @@ def consultar_kardex():
                     'costo_total': float(costo_total_traslado),
                     'saldo_costo_unitario': float(saldo_costo_unitario_origen),
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
-                    'saldo_costo_unitario_global': float(cpp_global),
+                    'saldo_costo_unitario_global': float(saldo_costo_unitario_global),
                     'descripcion': f'Traslado con referencia {movimiento.referencia}. Salida de Mercancía de {bodega_origen}'
                 })
 
@@ -6369,7 +5550,7 @@ def consultar_kardex():
                     'costo_total': float(costo_total_traslado),
                     'saldo_costo_unitario': float(saldo_costo_unitario_destino),
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
-                    'saldo_costo_unitario_global': float(cpp_global),
+                    'saldo_costo_unitario_global': float(saldo_costo_unitario_global),
                     'descripcion': f'Traslado con referencia {movimiento.referencia}. Entrada de Mercancía a {bodega_destino}'
                 })
 
@@ -6378,6 +5559,7 @@ def consultar_kardex():
     except Exception as e:
         print(f"Error al consultar Kardex: {str(e)}")
         return jsonify({'error': f'Error al consultar Kardex: {str(e)}'}), 500
+
 
 
 @app.route('/api/kardex/pdf', methods=['GET'])
@@ -6660,36 +5842,23 @@ def generar_kardex_pdf():
         resumen = []
         for almacen in almacenes:
             movimientos_almacen = [m for m in kardex if m['bodega'] == almacen]
-            # Calcular stock final
-            stock_final = sum(
-                mov['cantidad'] if mov['tipo'] == 'ENTRADA' else -mov['cantidad'] if mov['tipo'] == 'SALIDA' else 0
-                for mov in movimientos_almacen
-            )
-            # Calcular valor acumulado
-            valor_acumulado = sum(
-                mov['costo_total'] if mov['tipo'] == 'ENTRADA' else -mov['costo_total'] if mov['tipo'] == 'SALIDA' else 0
-                for mov in movimientos_almacen
-            )
-            # Calcular CPP (promedio de costo unitario de entradas)
-            entradas = [m for m in movimientos_almacen if m['tipo'] == 'ENTRADA']
-            cpp = sum(m['costo_unitario'] for m in entradas) / len(entradas) if entradas else 0.0
+            ultimo_mov = max(movimientos_almacen, key=lambda x: datetime.strptime(x['fecha'], '%Y-%m-%d %H:%M:%S'))
             resumen.append({
                 'almacen': almacen,
-                'stock_final': round(stock_final, 2),  # Redondear a 2 decimales
-                'valor_acumulado': valor_acumulado,
-                'cpp': cpp if stock_final > 0 else 0.0,
+                'stock_final': ultimo_mov['saldo'],
+                'valor_acumulado': ultimo_mov['saldo_costo_total'],
+                'cpp': ultimo_mov['saldo_costo_unitario'],
             })
-        total_stock = round(sum(r['stock_final'] for r in resumen), 2)  # Redondear total
+        total_stock = sum(r['stock_final'] for r in resumen)
         total_valor = sum(r['valor_acumulado'] for r in resumen)
         cpp_global = total_valor / total_stock if total_stock > 0 else 0.0
 
-        # Resumen por almacén
         pdf.setFont("Helvetica-Bold", 12)
         pdf.drawString(30, y, "Resumen por Almacén")
         pdf.line(30, y - 5, 750, y - 5)
         y -= 20
         pdf.setFont("Helvetica", 10)
-        pdf.drawString(30, y, f"CPP Global: {'N/A' if cpp_global == 0 else locale.currency(cpp_global, grouping=True)}")
+        pdf.drawString(30, y, f"CPP Global: ${cpp_global:.2f}")
         y -= 20
 
         pdf.setFont("Helvetica-Bold", 9)
@@ -6703,15 +5872,15 @@ def generar_kardex_pdf():
         pdf.setFont("Helvetica", 9)
         for r in resumen:
             pdf.drawString(30, y, r['almacen'])
-            pdf.drawString(150, y, f"{locale.format_string('%.2f', r['stock_final'], grouping=True)}")
-            pdf.drawString(250, y, f"{locale.currency(r['valor_acumulado'], grouping=True)}")
-            pdf.drawString(350, y, f"{'N/A' if r['cpp'] == 0 else locale.currency(r['cpp'], grouping=True)}")
+            pdf.drawString(150, y, f"{r['stock_final']:.3f}")
+            pdf.drawString(250, y, f"${r['valor_acumulado']:.2f}")
+            pdf.drawString(350, y, f"${r['cpp']:.2f}")
             y -= 15
 
         pdf.setFont("Helvetica-Bold", 9)
         pdf.drawString(30, y, "Total")
-        pdf.drawString(150, y, f"{locale.format_string('%.2f', total_stock, grouping=True)}")
-        pdf.drawString(250, y, f"{'N/A' if total_valor == 0 else locale.currency(total_valor, grouping=True)}")
+        pdf.drawString(150, y, f"{total_stock:.3f}")
+        pdf.drawString(250, y, f"${total_valor:.2f}")
         y -= 25
 
         # Tabla de movimientos
@@ -8416,22 +7585,21 @@ def registrar_entrega_total(orden_id):
     idcliente = claims.get('idcliente')
     usuario_id = claims.get('sub')  # Obtener usuario_id desde el token JWT
     if not idcliente:
-        logger.error(f"Intento de registrar entrega total para orden {orden_id} sin idcliente en el token")
         return jsonify({'error': 'No se encontró idcliente en el token.'}), 401
     if not usuario_id:
-        logger.error(f"Intento de registrar entrega total para orden {orden_id} sin usuario_id en el token")
         return jsonify({'error': 'No se encontró usuario_id en el token.'}), 401
 
     try:
+        # Convertir usuario_id a entero
         usuario_id = int(usuario_id)
+
+        # Validar que el usuario exista (opcional, comentar si no es necesario)
         usuario = db.session.get(Usuarios, usuario_id)
         if not usuario:
-            logger.error(f"Usuario {usuario_id} no encontrado para registrar entrega total de orden {orden_id}")
             return jsonify({'error': 'Usuario no encontrado.'}), 400
 
         orden = db.session.get(OrdenProduccion, orden_id)
         if not orden or orden.estado not in ["En Producción", "En Producción-Parcial"] or orden.idcliente != idcliente:
-            logger.error(f"Orden {orden_id} no válida o no pertenece al cliente {idcliente}")
             return jsonify({'error': 'La orden no está en estado válido o no pertenece al cliente.'}), 400
 
         cantidad_entregada = orden.cantidad_paquetes - (
@@ -8441,97 +7609,60 @@ def registrar_entrega_total(orden_id):
         )
 
         if cantidad_entregada <= 0:
-            logger.error(f"No hay cantidad pendiente para registrar entrega total en orden {orden_id}")
             return jsonify({'error': 'No hay cantidad pendiente para registrar entrega total.'}), 400
 
         with no_autoflush(db.session):
-            def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente):
-                materiales = MaterialProducto.query.filter_by(
-                    producto_compuesto_id=producto_compuesto_id,
-                    idcliente=idcliente
-                ).all()
-                for material in materiales:
-                    producto_base = db.session.get(Producto, material.producto_base_id)
-                    if not producto_base:
-                        raise ValueError(f"Producto base {material.producto_base_id} no encontrado")
+            materiales = MaterialProducto.query.filter_by(producto_compuesto_id=orden.producto_compuesto_id).all()
+            for material in materiales:
+                cantidad_consumida = abs(float(material.cantidad)) * float(cantidad_entregada)
+                ultimo_kardex = Kardex.query.filter(
+                    Kardex.producto_id == material.producto_base_id,
+                    (Kardex.bodega_origen_id == orden.bodega_produccion_id) | (Kardex.bodega_destino_id == orden.bodega_produccion_id)
+                ).order_by(Kardex.fecha.desc()).first()
+                costo_unitario = float(ultimo_kardex.saldo_costo_unitario) if ultimo_kardex else 0.0
+                saldo_cantidad_actual = float(ultimo_kardex.saldo_cantidad) if ultimo_kardex else 0.0
+                saldo_costo_total_actual = float(ultimo_kardex.saldo_costo_total) if ultimo_kardex else 0.0
 
-                    if producto_base.es_producto_compuesto:
-                        # Procesar recursivamente si el componente es compuesto
-                        procesar_materiales(
-                            producto_compuesto_id=material.producto_base_id,
-                            cantidad=cantidad * float(material.cantidad),
-                            bodega_id=bodega_id,
-                            idcliente=idcliente
-                        )
-                    else:
-                        # Procesar componente base
-                        cantidad_consumida = float(material.cantidad) * float(cantidad)
-                        ultimo_kardex = Kardex.query.filter(
-                            and_(
-                                Kardex.producto_id == material.producto_base_id,
-                                Kardex.idcliente == idcliente,
-                                (Kardex.bodega_origen_id == bodega_id) | (Kardex.bodega_destino_id == bodega_id)
-                            )
-                        ).order_by(Kardex.fecha.desc()).first()
-                        costo_unitario = float(ultimo_kardex.saldo_costo_unitario) if ultimo_kardex else 0.0
-                        saldo_cantidad = float(ultimo_kardex.saldo_cantidad) if ultimo_kardex else 0.0
-                        saldo_costo_total = float(ultimo_kardex.saldo_costo_total) if ultimo_kardex else 0.0
+                if saldo_cantidad_actual < cantidad_consumida:
+                    raise ValueError(f"No hay suficiente inventario para el producto {material.producto_base_id} en la bodega {orden.bodega_produccion_id}")
 
-                        if saldo_cantidad < cantidad_consumida:
-                            raise ValueError(f"No hay suficiente inventario para el producto {material.producto_base_id} en la bodega {bodega_id}")
-
-                        logger.info(f"Registrando consumo: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}")
-
-                        kardex_salida = Kardex(
-                            idcliente=idcliente,
-                            producto_id=material.producto_base_id,
-                            bodega_origen_id=bodega_id,
-                            fecha=obtener_hora_colombia(),
-                            tipo_movimiento='SALIDA',
-                            cantidad=cantidad_consumida,
-                            costo_unitario=costo_unitario,
-                            costo_total=costo_unitario * cantidad_consumida,
-                            saldo_cantidad=saldo_cantidad - cantidad_consumida,
-                            saldo_costo_unitario=costo_unitario,
-                            saldo_costo_total=saldo_costo_total - (costo_unitario * cantidad_consumida),
-                            referencia=f"Consumo para orden {orden.numero_orden}"
-                        )
-                        db.session.add(kardex_salida)
-                        actualizar_estado_inventario(
-                            material.producto_base_id,
-                            bodega_id,
-                            cantidad_consumida,
-                            es_entrada=False,
-                            orden_id=orden_id,
-                            idcliente=idcliente  # Añadido
-                        )
-
-                        detalle = DetalleProduccion(
-                            idcliente=idcliente,
-                            orden_produccion_id=orden.id,
-                            producto_base_id=material.producto_base_id,
-                            cantidad_consumida=cantidad_consumida,
-                            cantidad_producida=0,  # Componentes base no se producen
-                            bodega_destino_id=bodega_id,
-                            fecha_registro=obtener_hora_colombia()
-                        )
-                        db.session.add(detalle)
-
-            # Procesar materiales del producto compuesto
-            procesar_materiales(
-                producto_compuesto_id=orden.producto_compuesto_id,
-                cantidad=cantidad_entregada,
-                bodega_id=orden.bodega_produccion_id,
-                idcliente=idcliente
-            )
-
-            # Registrar entrada del producto compuesto
-            ultimo_kardex_compuesto = Kardex.query.filter(
-                and_(
-                    Kardex.producto_id == orden.producto_compuesto_id,
-                    Kardex.bodega_destino_id == orden.bodega_produccion_id,
-                    Kardex.idcliente == idcliente
+                kardex_salida = Kardex(
+                    idcliente=idcliente,
+                    producto_id=material.producto_base_id,
+                    bodega_origen_id=orden.bodega_produccion_id,
+                    fecha=obtener_hora_colombia(),
+                    tipo_movimiento='SALIDA',
+                    cantidad=cantidad_consumida,
+                    costo_unitario=costo_unitario,
+                    costo_total=costo_unitario * cantidad_consumida,
+                    saldo_cantidad=saldo_cantidad_actual - cantidad_consumida,
+                    saldo_costo_unitario=costo_unitario,
+                    saldo_costo_total=saldo_costo_total_actual - (costo_unitario * cantidad_consumida),
+                    referencia=f"Consumo para orden {orden.numero_orden}"
                 )
+                db.session.add(kardex_salida)
+                actualizar_estado_inventario(
+                    material.producto_base_id,
+                    orden.bodega_produccion_id,
+                    cantidad_consumida,
+                    es_entrada=False,
+                    orden_id=orden_id
+                )
+
+                detalle = DetalleProduccion(
+                    idcliente=idcliente,
+                    orden_produccion_id=orden.id,
+                    producto_base_id=material.producto_base_id,
+                    cantidad_consumida=cantidad_consumida,
+                    cantidad_producida=cantidad_entregada,
+                    bodega_destino_id=orden.bodega_produccion_id,
+                    fecha_registro=obtener_hora_colombia()
+                )
+                db.session.add(detalle)
+
+            ultimo_kardex_compuesto = Kardex.query.filter(
+                Kardex.producto_id == orden.producto_compuesto_id,
+                Kardex.bodega_destino_id == orden.bodega_produccion_id
             ).order_by(Kardex.fecha.desc()).first()
             saldo_cantidad_compuesto = float(ultimo_kardex_compuesto.saldo_cantidad) if ultimo_kardex_compuesto else 0.0
             costo_unitario_compuesto = float(orden.costo_unitario or 0)
@@ -8556,8 +7687,7 @@ def registrar_entrega_total(orden_id):
                 orden.bodega_produccion_id,
                 float(cantidad_entregada),
                 es_entrada=True,
-                orden_id=orden_id,
-                idcliente=idcliente  # Añadido
+                orden_id=orden_id
             )
 
             entrega = EntregaParcial(
@@ -8574,18 +7704,16 @@ def registrar_entrega_total(orden_id):
             orden.fecha_finalizacion = obtener_hora_colombia()
 
         db.session.commit()
-        logger.info(f"Entrega total registrada para orden_id={orden_id}, cantidad={cantidad_entregada}")
         return jsonify({'message': 'Entrega total registrada y orden finalizada con éxito.'}), 200
 
     except ValueError as ve:
         db.session.rollback()
-        logger.error(f"Error de validación en entrega total para orden_id={orden_id}: {str(ve)}")
         return jsonify({'error': str(ve)}), 400
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Error al registrar entrega total para orden_id={orden_id}: {str(e)}")
+        print(f"Error al registrar entrega total: {str(e)}")
         return jsonify({'error': str(e)}), 500
-    
+
 
 
 @app.route('/api/ordenes-produccion/<int:orden_id>/cierre-forzado', methods=['POST'])
@@ -8738,57 +7866,6 @@ def actualizar_estado_orden(orden_id):
     except Exception as e:
         print(f"Error al actualizar estado: {str(e)}")
         return jsonify({"error": "Ocurrió un error al actualizar el estado."}), 500
-
-
-
-@app.route('/api/ordenes-produccion/<int:orden_id>', methods=['DELETE'])
-@jwt_required()
-def eliminar_orden_produccion(orden_id):
-    claims = get_jwt()
-    idcliente = claims.get('idcliente')
-    if not idcliente:
-        logger.error(f"Intento de eliminar orden {orden_id} sin idcliente en el token")
-        return jsonify({'error': 'No se encontró idcliente en el token.'}), 401
-
-    # Verificar permisos
-    permisos = claims.get('permisos', [])
-    required_perm = {'seccion': 'production', 'subseccion': 'admin', 'permiso': 'editar'}
-    if not any(p == required_perm for p in permisos):
-        logger.warning(f"Usuario sin permiso para eliminar orden {orden_id}. Permisos: {permisos}")
-        return jsonify({'error': 'No tienes permiso para eliminar órdenes de producción.'}), 403
-
-    try:
-        # Buscar la orden
-        orden = db.session.get(OrdenProduccion, orden_id)
-        if not orden:
-            logger.info(f"Orden {orden_id} no encontrada para eliminación")
-            return jsonify({'error': 'Orden no encontrada.'}), 404
-
-        # Verificar que la orden pertenece al cliente
-        if orden.idcliente != idcliente:
-            logger.warning(f"Intento de eliminar orden {orden_id} de idcliente {orden.idcliente} por idcliente {idcliente}")
-            return jsonify({'error': 'No tienes permiso para eliminar esta orden.'}), 403
-
-        # Verificar si el estado permite eliminación
-        estados_permitidos = ['Pendiente', 'Lista para Producción']
-        if orden.estado not in estados_permitidos:
-            logger.info(f"No se puede eliminar orden {orden_id} en estado {orden.estado}")
-            return jsonify({
-                'error': f"No se puede eliminar la orden en estado '{orden.estado}'. Solo se permiten los estados: {estados_permitidos}"
-            }), 400
-
-        # Eliminar la orden
-        db.session.delete(orden)
-        db.session.commit()
-
-        logger.info(f"Orden {orden_id} eliminada exitosamente por usuario {claims.get('sub')}")
-        return jsonify({'message': 'Orden eliminada exitosamente.'}), 200
-
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error al eliminar orden {orden_id}: {str(e)}")
-        return jsonify({'error': f"Ocurrió un error al eliminar la orden: {str(e)}"}), 500
-
 
 
 # Generar PDF detallado de una orden de producción
@@ -9751,109 +8828,12 @@ def save_cutoff_config():
         return jsonify({"error": str(e)}), 500
 
 
-#Endpoints pagina de Sincronizacacion
-@app.route('/config/sync', methods=['GET'])
-@jwt_required()
-def get_sync_config():
-    try:
-        claims = get_jwt()
-        idcliente = claims.get('idcliente')
-        if not idcliente:
-            logger.error("No se encontró idcliente en los claims")
-            return jsonify({"error": "Cliente no encontrado en el token"}), 401
-
-        if not has_permission(claims, 'parametrizacion', 'sync_config', 'editar'):
-            logger.error("Usuario no autorizado para acceder a /config/sync")
-            return jsonify({"error": "No autorizado"}), 403
-
-        config = Configuraciones.query.filter_by(idcliente=idcliente).first()
-        if config:
-            logger.info(f"Configuración encontrada para idcliente {idcliente}")
-            return jsonify({
-                'sync_analisis_inventario': config.sync_analisis_inventario,
-                'sync_analisis_produccion': config.sync_analisis_produccion
-            }), 200
-        logger.info(f"No hay configuración para idcliente {idcliente}, devolviendo valores por defecto")
-        return jsonify({
-            'sync_analisis_inventario': False,
-            'sync_analisis_produccion': False
-        }), 200
-    except Exception as e:
-        logger.error(f"Error en get_sync_config: {str(e)}")
-        return jsonify({"error": "Error interno del servidor"}), 500
-    
-
-# Endpoint para guardar la configuración de sincronización
-@app.route('/config/sync', methods=['POST'])
-@jwt_required()
-def save_sync_config():
-    try:
-        claims = get_jwt()
-        idcliente = claims.get('idcliente')
-        if not idcliente:
-            logger.error("No se encontró idcliente en los claims")
-            return jsonify({"error": "Cliente no encontrado en el token"}), 401
-
-        if not has_permission(claims, 'parametrizacion', 'sync_config', 'editar'):
-            logger.error("Usuario no autorizado para modificar /config/sync")
-            return jsonify({"error": "No autorizado"}), 403
-
-        data = request.get_json()
-        sync_analisis_inventario = data.get('sync_analisis_inventario', False)
-        sync_analisis_produccion = data.get('sync_analisis_produccion', False)
-
-        config = Configuraciones.query.filter_by(idcliente=idcliente).first()
-        if config:
-            config.sync_analisis_inventario = sync_analisis_inventario
-            config.sync_analisis_produccion = sync_analisis_produccion
-            config.updatedat = obtener_hora_colombia()
-        else:
-            config = Configuraciones(
-                idcliente=idcliente,
-                cutoffyear=2025,  # Valor por defecto
-                cutoffmonth=1,    # Valor por defecto
-                sync_analisis_inventario=sync_analisis_inventario,
-                sync_analisis_produccion=sync_analisis_produccion,
-                createdat=obtener_hora_colombia(),
-                updatedat=obtener_hora_colombia()
-            )
-            db.session.add(config)
-
-        db.session.commit()
-        logger.info(f"Configuración guardada para idcliente {idcliente}")
-        return jsonify({'message': 'Configuración guardada'}), 200
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error en save_sync_config: {str(e)}")
-        return jsonify({"error": "Error interno del servidor"}), 500
-
-
-# Endpoint para verificar que la sincronizacion entre modulos analisis e inventario esta activa
-@app.route('/inventory/verificar-sincronizacion', methods=['GET'])
-@jwt_required()
-def verificar_sincronizacion():
-    logger.info("Solicitud recibida en /inventory/verificar-sincronizacion")
-    
-    claims = get_jwt()
-    idcliente = claims.get('idcliente')
-    if not idcliente:
-        logger.error("No se encontró idcliente en los claims")
-        return jsonify({'message': 'Cliente no encontrado en el token'}), 401
-
-    try:
-        config = Configuraciones.query.filter_by(idcliente=idcliente).first()
-        sync_inventario = config.sync_analisis_inventario if config else False
-        return jsonify({'sync_analisis_inventario': sync_inventario}), 200
-    except Exception as e:
-        logger.error(f"Error al verificar sincronización: {str(e)}")
-        return jsonify({'message': 'Error al verificar sincronización'}), 500
-
-
-
 #if __name__ == '__main__':
 #    app.run(debug=True, host='0.0.0.0', port=5000)
 
 if __name__ == '__main__':
-    import os
-    port = int(os.getenv('PORT', 5000))  # Usa el puerto de Railway si está definido, o 5000 por defecto
+        
+    #with app.app_context():
+        #db.create_all()  # Crea las tablas si no existen
+    port = int(os.getenv('PORT', 5000))  # Usa $PORT si existe (Railway), o 5000 por defecto
     app.run(debug=True, host='0.0.0.0', port=port)

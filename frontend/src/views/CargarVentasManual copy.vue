@@ -1,132 +1,127 @@
 <template>
-  <div class="cargar-ventas">
-    <h1>Cargar Ventas Manualmente</h1>
-
-    <section class="menu-buttons">
-      <button @click="limpiarPagina" class="btn btn-warning">Limpiar Página</button>
-    </section>
-
-    <!-- Mensaje de sincronización -->
-    <section v-if="isSyncActive" class="form-section sync-warning">
-      <h2>Advertencia</h2>
-      <p>El cargue de ventas se debe hacer por la página de <strong>Cargar Ventas Diarias</strong> del módulo de Análisis debido a la sincronización activa parametrizada entre los módulos de Analisis e Inventarios.</p>
-    </section>
-
-    <!-- Subida de Archivo CSV -->
-    <section class="form-section" v-if="!isSyncActive">
-      <h2>Subir Archivo CSV</h2>
-      <div class="form-group">
-        <label for="inputCsv">Archivo CSV:</label>
-        <input id="inputCsv" type="file" accept=".csv" @change="cargarCsv" ref="inputCsv" />
-      </div>
-      <button @click="procesarCsv" :disabled="isProcessing">Cargar Ventas</button>
-    </section>
-
-    <!-- Mostrar errores -->
-    <section v-if="errores.length" class="form-section">
-      <h2>Errores Detectados:</h2>
-      <ul>
-        <li v-for="(error, index) in errores" :key="index">{{ error }}</li>
-      </ul>
-    </section>
-
-    <!-- Descarga de Plantilla -->
-    <section class="form-section">
-      <h2>Descargar Plantilla</h2>
-      <button @click="descargarPlantilla">Descargar</button>
-    </section>
-
-    <!-- Consulta de Facturas de Venta -->
-    <section class="consulta-ventas form-section">
-      <h2>Consulta de Facturas de Venta</h2>
-      <div class="form-group">
-        <label for="filtroFactura">Número de Factura:</label>
-        <input v-model="filtroFactura" id="filtroFactura" placeholder="Ingrese número de factura" />
-      </div>
-      <div class="form-group">
-        <label for="fechaInicio">Fecha Inicio:</label>
-        <input type="date" v-model="fechaInicio" id="fechaInicio" />
-      </div>
-      <div class="form-group">
-        <label for="fechaFin">Fecha Fin:</label>
-        <input type="date" v-model="fechaFin" id="fechaFin" />
-      </div>
-      <div class="form-group">
-        <label for="filtroBodega">Bodega de Venta:</label>
-        <select v-model="filtroBodega" id="filtroBodega">
-          <option value="" disabled>Seleccione una bodega</option>
-          <option v-for="bodega in bodegas" :key="bodega.id" :value="bodega.id">{{ bodega.nombre }}</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label for="selectorFactura">Seleccionar Factura:</label>
-        <select v-model="filtroFactura" id="selectorFactura">
-          <option value="" disabled>Seleccione una factura</option>
-          <option v-for="factura in facturas" :key="factura" :value="factura">{{ factura }}</option>
-        </select>
-      </div>
-      <button @click="consultarVentas">Consultar Facturas</button>
-    </section>
-
-    <!-- Resultados de la Consulta -->
-    <section v-if="resultadosVentas.length" class="resultados-ventas form-section">
-      <h3>Resultados de la Consulta</h3>
-      <div class="form-actions">
-        <button @click="exportarListadoExcel">Exportar Listado <font-awesome-icon icon="file-excel" class="excel-icon" /></button>
-      </div>
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>Número de Factura</th>
-              <th>Fecha y Hora</th>
-              <th>Acción</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="venta in resultadosVentas" :key="venta.factura">
-              <td>{{ venta.factura }}</td>
-              <td>{{ venta.fecha }}</td>
-              <td>
-                <button @click="verDetalleVenta(venta.factura)" class="btn btn-info">Detalle</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- Detalle de la Factura de Venta -->
-    <section v-if="detalleVenta.length" class="detalle-venta form-section">
-      <h3>Detalle de la Factura de Venta {{ facturaSeleccionada }}</h3>
-      <div class="form-actions">
-        <button @click="exportarDetalleExcel">Exportar <font-awesome-icon icon="file-excel" class="excel-icon" /></button>
-      </div>
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>Código</th>
-              <th>Nombre</th>
-              <th>Cantidad</th>
-              <th>Bodega de Venta</th>
-              <th>Precio Unitario</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in detalleVenta" :key="item.id">
-              <td>{{ item.codigo }}</td>
-              <td>{{ item.nombre }}</td>
-              <td>{{ item.cantidad }}</td>
-              <td>{{ item.bodega }}</td>
-              <td>{{ item.precio_unitario !== null ? `$${item.precio_unitario.toFixed(2)}` : 'N/A' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </div>
-</template>
+    <div class="cargar-ventas">
+      <h1>Cargar Ventas Manualmente</h1>
+  
+      <section class="menu-buttons">
+        <!-- <button @click="volverAlMenu" class="btn btn-secondary">Volver al Menú</button> -->
+        <button @click="limpiarPagina" class="btn btn-warning">Limpiar Página</button>
+      </section>
+  
+      <!-- Subida de Archivo CSV -->
+      <section class="form-section">
+        <h2>Subir Archivo CSV</h2>
+        <div class="form-group">
+          <label for="inputCsv">Archivo CSV:</label>
+          <input id="inputCsv" type="file" @change="cargarCsv" ref="inputCsv" />
+        </div>
+        <button @click="procesarCsv">Cargar Ventas</button>
+      </section>
+  
+      <!-- Mostrar errores -->
+      <section v-if="errores.length" class="form-section">
+        <h2>Errores Detectados:</h2>
+        <ul>
+          <li v-for="(error, index) in errores" :key="index">{{ error }}</li>
+        </ul>
+      </section>
+  
+      <!-- Descarga de Plantilla -->
+      <section class="form-section">
+        <h2>Descargar Plantilla</h2>
+        <button @click="descargarPlantilla">Descargar</button>
+      </section>
+  
+      <!-- Consulta de Facturas de Venta -->
+      <section class="consulta-ventas form-section">
+        <h2>Consulta de Facturas de Venta</h2>
+        <div class="form-group">
+          <label for="filtroFactura">Número de Factura:</label>
+          <input v-model="filtroFactura" id="filtroFactura" placeholder="Ingrese número de factura" />
+        </div>
+        <div class="form-group">
+          <label for="fechaInicio">Fecha Inicio:</label>
+          <input type="date" v-model="fechaInicio" id="fechaInicio" />
+        </div>
+        <div class="form-group">
+          <label for="fechaFin">Fecha Fin:</label>
+          <input type="date" v-model="fechaFin" id="fechaFin" />
+        </div>
+        <div class="form-group">
+          <label for="filtroBodega">Bodega de Venta:</label>
+          <select v-model="filtroBodega" id="filtroBodega">
+            <option value="" disabled>Seleccione una bodega</option>
+            <option v-for="bodega in bodegas" :key="bodega.id" :value="bodega.id">{{ bodega.nombre }}</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="selectorFactura">Seleccionar Factura:</label>
+          <select v-model="filtroFactura" id="selectorFactura">
+            <option value="" disabled>Seleccione una factura</option>
+            <option v-for="factura in facturas" :key="factura" :value="factura">{{ factura }}</option>
+          </select>
+        </div>
+        <button @click="consultarVentas">Consultar Facturas</button>
+      </section>
+  
+      <!-- Resultados de la Consulta -->
+      <section v-if="resultadosVentas.length" class="resultados-ventas form-section">
+        <h3>Resultados de la Consulta</h3>
+        <div class="form-actions">
+          <button @click="exportarListadoExcel">Exportar Listado <font-awesome-icon icon="file-excel" class="excel-icon" /></button>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Número de Factura</th>
+                <th>Fecha y Hora</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="venta in resultadosVentas" :key="venta.factura">
+                <td>{{ venta.factura }}</td>
+                <td>{{ venta.fecha }}</td>
+                <td>
+                  <button @click="verDetalleVenta(venta.factura)" class="btn btn-info">Detalle</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+  
+      <!-- Detalle de la Factura de Venta -->
+      <section v-if="detalleVenta.length" class="detalle-venta form-section">
+        <h3>Detalle de la Factura de Venta {{ facturaSeleccionada }}</h3>
+        <div class="form-actions">
+          <button @click="exportarDetalleExcel">Exportar <font-awesome-icon icon="file-excel" class="excel-icon" /></button>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Código</th>
+                <th>Nombre</th>
+                <th>Cantidad</th>
+                <th>Bodega de Venta</th>
+                <th>Precio Unitario</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in detalleVenta" :key="item.id">
+                <td>{{ item.codigo }}</td>
+                <td>{{ item.nombre }}</td>
+                <td>{{ item.cantidad }}</td>
+                <td>{{ item.bodega }}</td>
+                <td>{{ item.precio_unitario !== null ? `$${item.precio_unitario.toFixed(2)}` : 'N/A' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </template>
 
 <script>
 import { ref, onMounted } from 'vue';
@@ -151,38 +146,24 @@ export default {
     const resultadosVentas = ref([]);
     const detalleVenta = ref([]);
     const facturaSeleccionada = ref('');
-    const isProcessing = ref(false);
-    const isSyncActive = ref(false);
-
-    const verificarSincronizacion = async () => {
-      try {
-        const response = await axios.get('/inventory/verificar-sincronizacion');
-        isSyncActive.value = response.data.sync_analisis_inventario;
-      } catch (error) {
-        console.error('Error al verificar sincronización:', error);
-        errores.value = ['No se pudo verificar la sincronización con el módulo de Análisis.'];
-      }
-    };
 
     const cargarCsv = (event) => {
       archivoCsv.value = event.target.files[0];
-      errores.value = [];
     };
 
     const procesarCsv = async () => {
       if (!archivoCsv.value) {
-        errores.value = ['Seleccione un archivo CSV para cargar'];
+        alert('Seleccione un archivo para cargar');
         return;
       }
 
-      isProcessing.value = true;
       const formData = new FormData();
       formData.append('file', archivoCsv.value);
 
       try {
         const response = await axios.post('/inventory/ventas', formData);
-        errores.value = [];
         alert(response.data.message);
+        errores.value = [];
         cargarFacturas();
         limpiarSesionCsv();
       } catch (error) {
@@ -190,21 +171,16 @@ export default {
         if (error.response?.data?.errors) {
           errores.value = error.response.data.errors;
         } else {
-          errores.value = [error.response?.data?.message || 'Ocurrió un error al cargar las ventas.'];
+          alert('Ocurrió un error al cargar las ventas.');
         }
-        if (error.response?.status === 401) {
-          router.push('/login');
-        }
-      } finally {
-        isProcessing.value = false;
       }
     };
 
     const descargarPlantilla = () => {
       const csvData = [
         ['factura', 'codigo', 'nombre', 'cantidad', 'fecha_venta', 'bodega', 'precio_unitario'],
-        ['FB1234567', 'PROD001', 'ARROZ ESPECIAL PERSONAL', '10', '2025-04-28 10:00:00', 'Almacen principal', '5000.00'],
-        ['CC8901234', 'PROD002', 'PASTA ESPECIAL PERSONAL', '5', '2025-04-28 11:30:00', 'Bodega Norte', ''],
+        ['FB1234567', 'GRA05299901000000', 'R5 BULK PASTEL YELLOW', '10', '2025-04-05 10:00:00', 'Bodega1', '75.00'],
+        ['CC8901234', 'GRA05299909000000', 'R5 BULK PASTEL LIGTH PINK', '5', '2025-04-05 11:30:00', 'Bodega2', ''],
       ];
       const csvContent = csvData.map(e => e.join(',')).join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -214,6 +190,10 @@ export default {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+    };
+
+    const volverAlMenu = () => {
+      router.push('/inventory');
     };
 
     const limpiarSesionCsv = () => {
@@ -336,12 +316,9 @@ export default {
       XLSX.writeFile(workbook, `detalle_factura_${facturaSeleccionada.value}.xlsx`);
     };
 
-    onMounted(async () => {
-      await verificarSincronizacion();
-      if (!isSyncActive.value) {
-        cargarFacturas();
-        cargarBodegas();
-      }
+    onMounted(() => {
+      cargarFacturas();
+      cargarBodegas();
     });
 
     return {
@@ -357,11 +334,10 @@ export default {
       resultadosVentas,
       detalleVenta,
       facturaSeleccionada,
-      isProcessing,
-      isSyncActive,
       cargarCsv,
       procesarCsv,
       descargarPlantilla,
+      volverAlMenu,
       limpiarPagina,
       cargarFacturas,
       cargarBodegas,
@@ -400,18 +376,6 @@ h3 {
   margin-bottom: 15px;
 }
 
-p {
-  font-size: 1rem;
-  color: #34495e;
-  margin-bottom: 15px;
-}
-
-.sync-warning {
-  background: #fff3cd;
-  border: 1px solid #ffeeba;
-  color: #856404;
-}
-
 .menu-buttons {
   display: flex;
   gap: 15px;
@@ -430,13 +394,16 @@ button, .btn {
   transition: background-color 0.2s ease;
 }
 
-button:disabled {
-  background-color: #cccccc;
-  cursor: not-allowed;
+button:hover, .btn:hover {
+  background-color: #2c3e50;
 }
 
-button:hover:not(:disabled), .btn:hover {
-  background-color: #2c3e50;
+.btn-secondary {
+  background-color: #6c757d;
+}
+
+.btn-secondary:hover {
+  background-color: #5a6268;
 }
 
 .btn-warning {
@@ -530,7 +497,7 @@ ul {
 }
 
 li {
-  color: #e74c3c;
+  color: #555;
   font-size: 14px;
 }
 

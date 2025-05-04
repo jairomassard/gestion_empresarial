@@ -228,8 +228,8 @@ class DetalleProduccion(db.Model):
     idcliente = db.Column(db.Integer, db.ForeignKey('clientes.idcliente'), nullable=False)
     orden_produccion_id = db.Column(db.Integer, db.ForeignKey('ordenes_produccion.id'), nullable=False)
     producto_base_id = db.Column(db.Integer, db.ForeignKey('productos.id'), nullable=False)
-    cantidad_consumida = db.Column(db.Numeric(10, 2), nullable=False)
-    cantidad_producida = db.Column(db.Numeric(10, 2), nullable=False)
+    cantidad_consumida = db.Column(db.Integer, nullable=False)
+    cantidad_producida = db.Column(db.Integer, nullable=False)
     bodega_destino_id = db.Column(db.Integer, db.ForeignKey('bodegas.id'), nullable=False)
     fecha_registro = db.Column(db.DateTime, nullable=False, default=db.func.now())
 
@@ -262,72 +262,3 @@ class EntregaParcial(db.Model):
             f"<EntregaParcial(id={self.id}, orden_produccion_id={self.orden_produccion_id}, "
             f"cantidad_entregada={self.cantidad_entregada}, fecha_entrega={self.fecha_entrega})>"
         )
-
-
-# Añadir al final de models.py
-
-class Configuraciones(db.Model):
-    __tablename__ = 'configuraciones'
-    idcliente = db.Column(db.Integer, db.ForeignKey('clientes.idcliente'), primary_key=True)
-    cutoffyear = db.Column(db.Integer)
-    cutoffmonth = db.Column(db.Integer)
-    createdat = db.Column(db.DateTime, default=db.func.current_timestamp())
-    updatedat = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
-    sync_analisis_inventario = db.Column(db.Boolean, default=False)
-    sync_analisis_produccion = db.Column(db.Boolean, default=False)
-
-    cliente = db.relationship('Clientes', backref='configuraciones')
-
-
-class PuntosDeVenta(db.Model):
-    __tablename__ = 'puntosdeventa'
-    id = db.Column(db.Integer, primary_key=True)
-    idcliente = db.Column(db.Integer, db.ForeignKey('clientes.idcliente'), nullable=False)
-    data1 = db.Column(db.String(50), nullable=False)
-    data2 = db.Column(db.String(50), nullable=False)
-    pdv = db.Column(db.String(200), unique=True, nullable=False)
-    estado = db.Column(db.String(10), default='Activo')
-
-    cliente = db.relationship('Clientes', backref='puntosdeventa')
-
-    def __repr__(self):
-        return f"<PuntosDeVenta(id={self.id}, pdv='{self.pdv}', estado='{self.estado}')>"
-    
-
-# Nuevo modelo para ventahistoricahora
-class VentaHistoricaHora(db.Model):
-    __tablename__ = 'ventahistoricahora'
-    id = db.Column(db.Integer, primary_key=True)
-    idcliente = db.Column(db.Integer, db.ForeignKey('clientes.idcliente'))
-    fecha = db.Column(db.Date, nullable=False)
-    rango_horarios = db.Column(db.String(20))
-    almacen = db.Column(db.String(50))
-    cliente = db.Column(db.String(100))
-    vendedor = db.Column(db.String(100))
-    descripcion = db.Column(db.String(200))
-    uds = db.Column(db.Integer)
-    importe = db.Column(db.Numeric(15, 2))
-
-    cliente_ref = db.relationship('Clientes', backref='ventas_historicas_hora')
-
-    def __repr__(self):
-        return f"<VentaHistoricaHora(id={self.id}, descripcion='{self.descripcion}', fecha='{self.fecha}')>"
-
-# Modelo para ventahistorica (si no está definido en otro lugar)
-class VentaHistorica(db.Model):
-    __tablename__ = 'ventahistorica'
-    idcliente = db.Column(db.Integer, db.ForeignKey('clientes.idcliente'), primary_key=True)
-    ano = db.Column(db.Integer, primary_key=True)
-    mes = db.Column(db.Integer, primary_key=True)
-    pdv = db.Column(db.String(50), db.ForeignKey('puntosdeventa.pdv'), primary_key=True)
-    venta = db.Column(db.Numeric(15, 2))
-
-    cliente = db.relationship('Clientes', backref='ventas_historicas')
-    punto_venta = db.relationship('PuntosDeVenta', backref='ventas_historicas')
-
-    __table_args__ = (
-        db.CheckConstraint('mes >= 1 AND mes <= 12', name='ventahistorica_mes_check'),
-    )
-
-    def __repr__(self):
-        return f"<VentaHistorica(idcliente={self.idcliente}, ano={self.ano}, mes={self.mes}, pdv='{self.pdv}')>"
