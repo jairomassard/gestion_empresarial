@@ -24,6 +24,7 @@ from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from datetime import datetime
 from pytz import timezone
 from contextlib import contextmanager
+import uuid
 
 from datetime import datetime, timezone
 from io import BytesIO
@@ -32,7 +33,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 from reportlab.lib.styles import getSampleStyleSheet
 from decimal import Decimal
-
+import locale
+import unicodedata
 
 # Crear la aplicación Flask
 app = Flask(__name__, static_folder='static', static_url_path='')
