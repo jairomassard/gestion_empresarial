@@ -24,7 +24,6 @@ from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from datetime import datetime
 from pytz import timezone
 from contextlib import contextmanager
-import uuid
 
 from datetime import datetime, timezone
 from io import BytesIO
@@ -33,12 +32,10 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 from reportlab.lib.styles import getSampleStyleSheet
 from decimal import Decimal
-import locale
-import unicodedata
 
 
-# Crer la aplicacpon Flask
-app = Flask(__name__)
+# Crear la aplicación Flask
+app = Flask(__name__, static_folder='static', static_url_path='')
 app.config.from_object(Config)
 
 # Configurar logging para ver errores detallados
@@ -49,7 +46,6 @@ logger = logging.getLogger(__name__)
 app.secret_key = app.config['SECRET_KEY']  # Usamos la clave del .env se usa para las sesiones
 app.config['JWT_SECRET_KEY'] = app.config['SECRET_KEY']  # Para JWT
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)  # Establecer duración del token a 8 horas
-
 # Al inicio de app.py, después de app.config.from_object(Config)
 #logger.info(f"SECRET_KEY: {app.config['SECRET_KEY']}")
 #logger.info(f"JWT_SECRET_KEY: {app.config['JWT_SECRET_KEY']}")
@@ -87,13 +83,14 @@ def unauthorized_callback(error):
 # Configurar CORS para permitir solicitudes desde el frontend
 # En desarrollo: localhost:8080 y 192.168.0.47:8080
 # En producción: el dominio del frontend en Railway
-allowed_origins = [
-    "http://localhost:8080",
-    "http://192.168.0.47:8080",
-    # Agrega el dominio del frontend en Railway cuando lo tengas
-    "https://frontend.railway.app"  # Placeholder, cámbialo por el dominio real
-]
-CORS(app, resources={r"/*": {"origins": allowed_origins}})
+#allowed_origins = [
+#    "http://localhost:8080",
+#    "http://192.168.0.47:8080",
+#    # Agrega el dominio del frontend en Railway cuando lo tengas
+#    "https://frontend.railway.app"  # Placeholder, cámbialo por el dominio real
+#]
+#CORS(app, resources={r"/*": {"origins": allowed_origins}})
+
 
 # Configurar localización para es_CO
 locale.setlocale(locale.LC_ALL, 'es_CO.UTF-8')
@@ -9854,6 +9851,8 @@ def verificar_sincronizacion():
 #    app.run(debug=True, host='0.0.0.0', port=5000)
 
 if __name__ == '__main__':
-    import os
-    port = int(os.getenv('PORT', 5000))  # Usa el puerto de Railway si está definido, o 5000 por defecto
+        
+    #with app.app_context():
+        #db.create_all()  # Crea las tablas si no existen
+    port = int(os.getenv('PORT', 5000))  # Usa $PORT si existe (Railway), o 5000 por defecto
     app.run(debug=True, host='0.0.0.0', port=port)
