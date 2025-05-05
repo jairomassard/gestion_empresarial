@@ -117,7 +117,7 @@
             <span>Cargar Presupuesto de Venta</span>
           </router-link>
           <router-link
-            v-if="store.getters.hasPermission('parametrizacion', 'puntos_de_venta', 'editar')"
+            v-if="store.getters.hasPermission('cargue', 'puntos_de_venta', 'editar')"
             to="/points-of-sale"
             class="card"
           >

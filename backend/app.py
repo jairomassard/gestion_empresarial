@@ -951,6 +951,7 @@ def debug_models():
     return jsonify({"models": list(db.Model.registry._class_registry.keys())})
 # Endpoint para login
 # app.py (endpoint /login)
+
 @app.route('/login', methods=['POST'])
 def login():
     try:
