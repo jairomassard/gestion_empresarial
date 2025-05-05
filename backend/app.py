@@ -263,7 +263,7 @@ def actualizar_estado_inventario(producto_id, bodega_id, cantidad, es_entrada, o
             cantidad=0,
             costo_unitario=0.0,
             costo_total=0.0,
-            ultima_actualizacion=datetime.now()
+            ultima_actualizacion=obtener_hora_colombia()  # Usar hora de Colombia
         )
         db.session.add(inventario)
 
@@ -284,7 +284,7 @@ def actualizar_estado_inventario(producto_id, bodega_id, cantidad, es_entrada, o
         inventario.cantidad -= float(cantidad)
 
     inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = datetime.now()
+    inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
     logger.debug(f"Actualizado estado_inventario: producto_id={producto_id}, bodega_id={bodega_id}, cantidad={inventario.cantidad}, costo_total={inventario.costo_total}")
 
 
@@ -366,7 +366,7 @@ def producir_compuesto_anidado(producto_compuesto_id, cantidad, bodega_id, idcli
             cantidad_consumida=cantidad_necesaria,
             cantidad_producida=0,
             bodega_destino_id=bodega_id,
-            fecha_registro=fecha
+            fecha_registro=obtener_hora_colombia()  # Usar hora de Colombia
         )
         db.session.add(detalle)
         logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_necesaria}")
@@ -387,14 +387,14 @@ def producir_compuesto_anidado(producto_compuesto_id, cantidad, bodega_id, idcli
             cantidad=0.0,
             costo_unitario=costo_unitario_compuesto,
             costo_total=0.0,
-            ultima_actualizacion=fecha
+            ultima_actualizacion=obtener_hora_colombia()  # Usar hora de Colombia
         )
         db.session.add(inventario)
 
     inventario.cantidad = float(inventario.cantidad) + float(cantidad)
     inventario.costo_unitario = costo_unitario_compuesto
     inventario.costo_total = float(inventario.cantidad) * costo_unitario_compuesto
-    inventario.ultima_actualizacion = fecha
+    inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
 
     ultimo_kardex = Kardex.query.filter_by(
         producto_id=producto_compuesto_id,
@@ -582,7 +582,7 @@ def descontar_inventario(producto_id, bodega_id, cantidad, idcliente, referencia
 
     inventario.cantidad = float(inventario.cantidad) - float(cantidad)
     inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = fecha
+    inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
 
     saldo_cantidad = float(inventario.cantidad)
     referencia_truncada = referencia[:100]  # Truncar a 100 caracteres
@@ -642,7 +642,7 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
         cantidad_paquetes=cantidad,
         estado='Creada',
         bodega_produccion_id=bodega_id,
-        fecha_creacion=fecha,
+        fecha_creacion=obtener_hora_colombia(),  # Usar hora de Colombia
         fecha_inicio=fecha,
         creado_por=usuario_id,
         numero_orden=nuevo_numero,
@@ -694,13 +694,13 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
             cantidad=0.0,
             costo_unitario=costo_unitario,
             costo_total=0.0,
-            ultima_actualizacion=fecha
+            ultima_actualizacion=obtener_hora_colombia()  # Usar hora de Colombia
         )
         db.session.add(inventario)
 
     inventario.cantidad = float(inventario.cantidad) + float(cantidad)
     inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = fecha
+    inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
 
     referencia_truncada = f"Producción de {producto.nombre}"[:100]
     kardex = Kardex(
@@ -738,7 +738,7 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
     entrega = EntregaParcial(
         orden_produccion_id=orden.id,
         cantidad_entregada=float(cantidad),
-        fecha_entrega=fecha,
+        fecha_entrega=obtener_hora_colombia(),  # Usar hora de Colombia
         comentario="Entrega total en bodega registrada automáticamente",
         idcliente=idcliente,
         usuario_id=usuario_id
@@ -747,7 +747,7 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
 
     # Finalizar orden
     orden.estado = 'Finalizada'
-    orden.fecha_finalizacion = fecha
+    orden.fecha_finalizacion = obtener_hora_colombia()  # Usar hora de Colombia
     orden.costo_unitario = costo_unitario
     orden.costo_total = costo_unitario * cantidad
     db.session.flush()
@@ -797,7 +797,7 @@ def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, o
 
             inventario.cantidad = float(inventario.cantidad) - float(cantidad_consumida)
             inventario.costo_total = float(inventario.cantidad) * costo_unitario
-            inventario.ultima_actualizacion = fecha
+            inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
 
             referencia_truncada = f"Consumo de {producto_base.nombre} para orden {numero_orden}"[:100]  # Truncar a 100 caracteres
             kardex_salida = Kardex(
@@ -838,7 +838,7 @@ def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, o
                 cantidad_consumida=cantidad_consumida,
                 cantidad_producida=0,
                 bodega_destino_id=bodega_id,
-                fecha_registro=fecha
+                fecha_registro=obtener_hora_colombia()  # Usar hora de Colombia
             )
             db.session.add(detalle)
             logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}")
@@ -907,7 +907,7 @@ def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, o
                 cantidad_consumida=cantidad_consumida,
                 cantidad_producida=0,
                 bodega_destino_id=bodega_id,
-                fecha_registro=fecha
+                fecha_registro=obtener_hora_colombia()  # Usar hora de Colombia
             )
             db.session.add(detalle)
             logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}")
