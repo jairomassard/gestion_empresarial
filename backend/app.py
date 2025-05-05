@@ -6336,16 +6336,26 @@ def consultar_kardex():
 @jwt_required()
 def generar_kardex_pdf():
     try:
-        # Configurar locale para formato monetario
+        # Verificar dependencias
+        try:
+            from reportlab.pdfgen import canvas
+        except ImportError as e:
+            logger.error(f"Dependencia 'reportlab' no encontrada: {str(e)}")
+            return jsonify({'error': 'Error del servidor: ReportLab no está instalado'}), 500
+
+        # Configurar locale
         try:
             locale.setlocale(locale.LC_ALL, 'es_CO.UTF-8')
-        except locale.Error:
-            logger.warning("No se pudo configurar locale es_CO.UTF-8, usando default")
+            logger.debug("Locale configurado a es_CO.UTF-8")
+        except locale.Error as e:
+            logger.warning(f"No se pudo configurar locale es_CO.UTF-8: {str(e)}. Usando default")
             locale.setlocale(locale.LC_ALL, '')
 
         # Verificar permisos
         claims = get_jwt()
+        logger.debug(f"Claims recibidos: {claims}")
         if not has_permission(claims, 'inventario', 'kardex', 'ver'):
+            logger.error("Usuario sin permiso para generar PDF del Kardex")
             return jsonify({'error': 'No tienes permiso para generar el PDF del Kardex'}), 403
 
         # Obtener parámetros
@@ -6356,12 +6366,14 @@ def generar_kardex_pdf():
         idcliente = claims.get('idcliente')
 
         if not all([codigo_producto, fecha_inicio, fecha_fin, idcliente]):
+            logger.error("Faltan parámetros: codigo, fecha_inicio, fecha_fin, idcliente")
             return jsonify({'error': 'Faltan parámetros (código, fecha_inicio, fecha_fin, idcliente).'}), 400
 
-        # Convertir fechas a datetime
+        # Convertir fechas
         try:
             fecha_inicio_dt = datetime.strptime(fecha_inicio, '%Y-%m-%d')
             fecha_fin_dt = datetime.strptime(fecha_fin, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+            logger.debug(f"Fechas convertidas: {fecha_inicio_dt} a {fecha_fin_dt}")
         except ValueError as ve:
             logger.error(f"Formato de fecha inválido: {str(ve)}")
             return jsonify({'error': 'Formato de fecha inválido. Use YYYY-MM-DD.'}), 400
@@ -6378,7 +6390,7 @@ def generar_kardex_pdf():
             logger.error(f"Producto con código {codigo_producto} no encontrado")
             return jsonify({'error': f'Producto con código {codigo_producto} no encontrado.'}), 404
 
-        # Obtener IDs de bodegas si se especifican
+        # Obtener bodegas
         bodegas_ids = None
         if bodegas:
             bodegas_list = bodegas.split(',')
@@ -6387,6 +6399,7 @@ def generar_kardex_pdf():
             if not bodegas_ids:
                 logger.error(f"Ninguna bodega encontrada para {bodegas_list}")
                 return jsonify({'error': 'Ninguna de las bodegas especificadas fue encontrada.'}), 404
+            logger.debug(f"Bodegas IDs: {bodegas_ids}")
 
         # Calcular saldo inicial
         saldo_bodegas = {}
@@ -6401,23 +6414,26 @@ def generar_kardex_pdf():
                 (Kardex.bodega_origen_id.in_(bodegas_ids)) | (Kardex.bodega_destino_id.in_(bodegas_ids))
             )
         kardex_interno = kardex_interno_query.order_by(Kardex.fecha).all()
+        logger.debug(f"Movimientos iniciales encontrados: {len(kardex_interno)}")
 
         for movimiento in kardex_interno:
+            cantidad = float(movimiento.cantidad or 0)
+            costo_total = float(movimiento.costo_total or 0)
             if movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
-                saldo_bodegas[movimiento.bodega_origen_id] = saldo_bodegas.get(movimiento.bodega_origen_id, 0) - float(movimiento.cantidad or 0)
-                saldo_costo_total_bodegas[movimiento.bodega_origen_id] = saldo_costo_total_bodegas.get(movimiento.bodega_origen_id, 0) - float(movimiento.costo_total or 0)
+                saldo_bodegas[movimiento.bodega_origen_id] = saldo_bodegas.get(movimiento.bodega_origen_id, 0) - cantidad
+                saldo_costo_total_bodegas[movimiento.bodega_origen_id] = saldo_costo_total_bodegas.get(movimiento.bodega_origen_id, 0) - costo_total
             elif movimiento.tipo_movimiento == 'ENTRADA' and movimiento.bodega_destino_id:
-                saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + float(movimiento.cantidad or 0)
-                saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + float(movimiento.costo_total or 0)
+                saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + cantidad
+                saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + costo_total
             elif movimiento.tipo_movimiento == 'TRASLADO':
                 if movimiento.bodega_origen_id:
-                    saldo_bodegas[movimiento.bodega_origen_id] = saldo_bodegas.get(movimiento.bodega_origen_id, 0) - float(movimiento.cantidad or 0)
-                    saldo_costo_total_bodegas[movimiento.bodega_origen_id] = saldo_costo_total_bodegas.get(movimiento.bodega_origen_id, 0) - float(movimiento.costo_total or 0)
+                    saldo_bodegas[movimiento.bodega_origen_id] = saldo_bodegas.get(movimiento.bodega_origen_id, 0) - cantidad
+                    saldo_costo_total_bodegas[movimiento.bodega_origen_id] = saldo_costo_total_bodegas.get(movimiento.bodega_origen_id, 0) - costo_total
                 if movimiento.bodega_destino_id:
-                    saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + float(movimiento.cantidad or 0)
-                    saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + float(movimiento.costo_total or 0)
+                    saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + cantidad
+                    saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + costo_total
 
-        # Preparar saldos iniciales por bodega
+        # Preparar saldos iniciales
         saldo_bodegas_nombres = {}
         total_saldo_global = 0
         total_costo_global = 0
@@ -6435,10 +6451,11 @@ def generar_kardex_pdf():
                 }
                 total_saldo_global += saldo
                 total_costo_global += costo_total
+        logger.debug(f"Saldos iniciales: {saldo_bodegas_nombres}")
 
         saldo_costo_unitario_global = total_costo_global / total_saldo_global if total_saldo_global > 0 else 0.0
 
-        # Consultar movimientos en el rango
+        # Consultar movimientos
         movimientos_query = Kardex.query.filter(
             Kardex.producto_id == producto.id,
             Kardex.idcliente == idcliente,
@@ -6450,6 +6467,7 @@ def generar_kardex_pdf():
                 (Kardex.bodega_origen_id.in_(bodegas_ids)) | (Kardex.bodega_destino_id.in_(bodegas_ids))
             )
         movimientos = movimientos_query.order_by(Kardex.fecha).all()
+        logger.debug(f"Movimientos en rango: {len(movimientos)}")
 
         kardex = []
         saldo_actual = saldo_bodegas.copy()
@@ -6508,7 +6526,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_bodega,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': movimiento.referencia or 'Entrada registrada'
+                    'descripcion': (movimiento.referencia or 'Entrada registrada')[:100]  # Limitar longitud
                 })
 
             elif movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
@@ -6545,7 +6563,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_bodega,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': movimiento.referencia or 'Salida registrada'
+                    'descripcion': (movimiento.referencia or 'Salida registrada')[:100]
                 })
 
             elif movimiento.tipo_movimiento == 'TRASLADO' and movimiento.bodega_origen_id and movimiento.bodega_destino_id:
@@ -6575,7 +6593,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_origen,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': f'Traslado a {movimiento.bodega_destino.nombre}. Ref: {movimiento.referencia or "N/A"}'
+                    'descripcion': (f'Traslado a {movimiento.bodega_destino.nombre}. Ref: {movimiento.referencia or "N/A"}')[:100]
                 })
 
                 # Entrada en destino
@@ -6601,7 +6619,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_destino,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': f'Traslado desde {bodega_origen}. Ref: {movimiento.referencia or "N/A"}'
+                    'descripcion': (f'Traslado desde {bodega_origen}. Ref: {movimiento.referencia or "N/A"}')[:100]
                 })
 
         if not kardex:
@@ -6624,6 +6642,7 @@ def generar_kardex_pdf():
         bodegas_str = ", ".join(bodegas.split(',')) if bodegas else "Todos los almacenes"
         pdf.drawString(30, 470, f"Almacenes: {bodegas_str}")
         y = 450
+        logger.debug("Encabezado del PDF generado")
 
         # Resumen por almacén
         almacenes = sorted(set(mov['bodega'] for mov in kardex if mov['bodega'] and mov['bodega'] != 'N/A'))
@@ -6649,6 +6668,7 @@ def generar_kardex_pdf():
         total_stock = round(sum(r['stock_final'] for r in resumen), 2)
         total_valor = round(sum(r['valor_acumulado'] for r in resumen), 2)
         cpp_global = total_valor / total_stock if total_stock > 0 else 0.0
+        logger.debug(f"Resumen por almacén: {resumen}")
 
         pdf.setFont("Helvetica-Bold", 12)
         pdf.drawString(30, y, "Resumen por Almacén")
@@ -6668,7 +6688,7 @@ def generar_kardex_pdf():
 
         pdf.setFont("Helvetica", 9)
         for r in resumen:
-            pdf.drawString(30, y, r['almacen'])
+            pdf.drawString(30, y, r['almacen'][:30])  # Limitar longitud
             pdf.drawString(150, y, f"{locale.format_string('%.2f', r['stock_final'], grouping=True)}")
             pdf.drawString(250, y, f"{locale.currency(r['valor_acumulado'], grouping=True)}")
             pdf.drawString(350, y, f"{'N/A' if r['cpp'] == 0 else locale.currency(r['cpp'], grouping=True)}")
@@ -6701,10 +6721,11 @@ def generar_kardex_pdf():
         ancho_valor_acumulado = 70
         ancho_cpp = 50
         ancho_cpp_global = 60
-        ancho_descripcion = 750 - (
+        ancho_descripcion = max(100, 750 - (
             ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo +
             ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global + 30
-        )
+        ))
+        logger.debug(f"Ancho descripción calculado: {ancho_descripcion}")
 
         # Encabezados de tabla
         pdf.setFont("Helvetica-Bold", 8)
@@ -6732,12 +6753,11 @@ def generar_kardex_pdf():
 
             cantidad = f"-{movimiento['cantidad']:.3f}" if movimiento['tipo'] == "SALIDA" else f"{movimiento['cantidad']:.3f}"
             costo_total = f"-${movimiento['costo_total']:.2f}" if movimiento['tipo'] == "SALIDA" else f"${movimiento['costo_total']:.2f}"
-            descripcion = movimiento['descripcion'] or "N/A"
-            descripcion_lines = simpleSplit(descripcion, "Helvetica", 7, ancho_descripcion)[:2]  # Limitar a 2 líneas
+            descripcion = movimiento['descripcion'][:100]  # Limitar longitud
 
             pdf.drawString(30, y, movimiento['fecha'])
             pdf.drawString(30 + ancho_fecha, y, movimiento['tipo'])
-            pdf.drawString(30 + ancho_fecha + ancho_documento, y, movimiento['bodega'] or "N/A")
+            pdf.drawString(30 + ancho_fecha + ancho_documento, y, movimiento['bodega'][:30] or "N/A")
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen, y, cantidad)
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad, y, f"${movimiento['costo_unitario']:.2f}")
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo, y, costo_total)
@@ -6745,17 +6765,16 @@ def generar_kardex_pdf():
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada, y, f"${movimiento['saldo_costo_total']:.2f}")
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado, y, f"${movimiento['saldo_costo_unitario']:.2f}")
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp, y, f"${movimiento['saldo_costo_unitario_global']:.2f}")
-
-            for i, line in enumerate(descripcion_lines):
-                pdf.drawString(
-                    30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo +
-                    ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global,
-                    y - (i * 12), line
-                )
-            y -= (len(descripcion_lines) * 12)
+            pdf.drawString(
+                30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo +
+                ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global,
+                y, descripcion
+            )
+            y -= 12
 
         pdf.save()
         buffer.seek(0)
+        logger.debug("PDF generado en buffer")
 
         # Generar nombre del archivo
         bodegas_str = bodegas.replace(',', '_') if bodegas else 'todas'
@@ -6772,7 +6791,7 @@ def generar_kardex_pdf():
     except Exception as e:
         logger.error(f"Error al generar PDF del Kardex: {str(e)}", exc_info=True)
         return jsonify({'error': f'Error al generar el PDF: {str(e)}'}), 500
-
+    
 
 # ENDPOINTS PAGINA DE TRANSLADOS CANTIDADES:
 @app.route('/api/trasladar_varios', methods=['POST'])
