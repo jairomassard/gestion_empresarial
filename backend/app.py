@@ -12,7 +12,7 @@ import bcrypt
 from datetime import datetime, date, timedelta
 import calendar
 import logging
-from io import TextIOWrapper
+from io import TextIOWrapper, BytesIO
 import csv
 from decimal import Decimal
 from io import TextIOWrapper, BytesIO
@@ -34,7 +34,8 @@ from reportlab.lib.utils import simpleSplit
 from reportlab.lib.styles import getSampleStyleSheet
 from decimal import Decimal
 import locale
-import unicodedata
+import unicodedata, os
+
 
 # Crear la aplicación Flask
 app = Flask(__name__, static_folder='static', static_url_path='')
@@ -6336,7 +6337,7 @@ def consultar_kardex():
 @jwt_required()
 def generar_kardex_pdf():
     try:
-        # Verificar dependencias
+        # Verificar reportlab
         try:
             from reportlab.pdfgen import canvas
         except ImportError as e:
@@ -6526,7 +6527,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_bodega,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': (movimiento.referencia or 'Entrada registrada')[:100]  # Limitar longitud
+                    'descripcion': (movimiento.referencia or 'Entrada registrada')[:100]
                 })
 
             elif movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
@@ -6567,11 +6568,10 @@ def generar_kardex_pdf():
                 })
 
             elif movimiento.tipo_movimiento == 'TRASLADO' and movimiento.bodega_origen_id and movimiento.bodega_destino_id:
-                # Salida desde origen
                 bodega_origen = movimiento.bodega_origen.nombre
                 saldo_origen_antes = saldo_actual.get(movimiento.bodega_origen_id, 0)
                 costo_total_origen_antes = saldo_costo_total_actual.get(movimiento.bodega_origen_id, 0)
-                costo_unitario_origen = costo_total_origen_antes / saldo_origen_antes if saldo_origen_antes > 0 else 0.0
+                costo_unitario_origen = costo_total_antes / saldo_origen_antes if saldo_origen_antes > 0 else 0.0
                 cantidad = float(movimiento.cantidad or 0)
                 costo_total_traslado = cantidad * costo_unitario_origen
 
@@ -6596,7 +6596,6 @@ def generar_kardex_pdf():
                     'descripcion': (f'Traslado a {movimiento.bodega_destino.nombre}. Ref: {movimiento.referencia or "N/A"}')[:100]
                 })
 
-                # Entrada en destino
                 bodega_destino = movimiento.bodega_destino.nombre
                 saldo_destino_antes = saldo_actual.get(movimiento.bodega_destino_id, 0)
                 costo_total_destino_antes = saldo_costo_total_actual.get(movimiento.bodega_destino_id, 0)
@@ -6688,7 +6687,7 @@ def generar_kardex_pdf():
 
         pdf.setFont("Helvetica", 9)
         for r in resumen:
-            pdf.drawString(30, y, r['almacen'][:30])  # Limitar longitud
+            pdf.drawString(30, y, r['almacen'][:30])
             pdf.drawString(150, y, f"{locale.format_string('%.2f', r['stock_final'], grouping=True)}")
             pdf.drawString(250, y, f"{locale.currency(r['valor_acumulado'], grouping=True)}")
             pdf.drawString(350, y, f"{'N/A' if r['cpp'] == 0 else locale.currency(r['cpp'], grouping=True)}")
@@ -6753,7 +6752,7 @@ def generar_kardex_pdf():
 
             cantidad = f"-{movimiento['cantidad']:.3f}" if movimiento['tipo'] == "SALIDA" else f"{movimiento['cantidad']:.3f}"
             costo_total = f"-${movimiento['costo_total']:.2f}" if movimiento['tipo'] == "SALIDA" else f"${movimiento['costo_total']:.2f}"
-            descripcion = movimiento['descripcion'][:100]  # Limitar longitud
+            descripcion = movimiento['descripcion'][:100]
 
             pdf.drawString(30, y, movimiento['fecha'])
             pdf.drawString(30 + ancho_fecha, y, movimiento['tipo'])
