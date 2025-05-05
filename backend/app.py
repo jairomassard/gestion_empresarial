@@ -263,7 +263,7 @@ def actualizar_estado_inventario(producto_id, bodega_id, cantidad, es_entrada, o
             cantidad=0,
             costo_unitario=0.0,
             costo_total=0.0,
-            ultima_actualizacion=obtener_hora_colombia()  # Usar hora de Colombia
+            ultima_actualizacion=obtener_hora_colombia()
         )
         db.session.add(inventario)
 
@@ -284,7 +284,7 @@ def actualizar_estado_inventario(producto_id, bodega_id, cantidad, es_entrada, o
         inventario.cantidad -= float(cantidad)
 
     inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
+    inventario.ultima_actualizacion = obtener_hora_colombia()
     logger.debug(f"Actualizado estado_inventario: producto_id={producto_id}, bodega_id={bodega_id}, cantidad={inventario.cantidad}, costo_total={inventario.costo_total}")
 
 
@@ -296,7 +296,6 @@ def producir_compuesto_anidado(producto_compuesto_id, cantidad, bodega_id, idcli
 
     logger.debug(f"Procesando producto compuesto anidado: producto_id={producto_compuesto_id}, cantidad={cantidad}, bodega_id={bodega_id}")
 
-    # Procesar materiales del compuesto anidado
     materiales = MaterialProducto.query.filter_by(
         producto_compuesto_id=producto_compuesto_id, idcliente=idcliente
     ).all()
@@ -313,7 +312,6 @@ def producir_compuesto_anidado(producto_compuesto_id, cantidad, bodega_id, idcli
         costo_total += costo_unitario_base * cantidad_necesaria
         logger.debug(f"Material: producto_base_id={material.producto_base_id}, cantidad_necesaria={cantidad_necesaria}, costo_unitario={costo_unitario_base}")
 
-        # Registrar consumo del material base
         disponible, cantidad_actual = verificar_inventario(material.producto_base_id, bodega_id, cantidad_necesaria, idcliente)
         if not disponible:
             raise ValueError(f"No hay suficiente inventario para producto_base_id={material.producto_base_id}, requerido={cantidad_necesaria}, disponible={cantidad_actual}")
@@ -327,7 +325,7 @@ def producir_compuesto_anidado(producto_compuesto_id, cantidad, bodega_id, idcli
             idcliente=idcliente
         )
 
-        referencia_truncada = f"Consumo para orden {numero_orden}"[:100]  # Truncar a 100 caracteres
+        referencia_truncada = f"Consumo para orden {numero_orden}"[:100]
         kardex_salida = Kardex(
             idcliente=idcliente,
             producto_id=material.producto_base_id,
@@ -366,14 +364,13 @@ def producir_compuesto_anidado(producto_compuesto_id, cantidad, bodega_id, idcli
             cantidad_consumida=cantidad_necesaria,
             cantidad_producida=0,
             bodega_destino_id=bodega_id,
-            fecha_registro=obtener_hora_colombia()  # Usar hora de Colombia
+            fecha_registro=obtener_hora_colombia()
         )
         db.session.add(detalle)
         logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_necesaria}")
 
     costo_unitario_compuesto = costo_total / float(cantidad) if cantidad > 0 else 0.0
 
-    # Registrar entrada del producto compuesto
     inventario = EstadoInventario.query.filter_by(
         producto_id=producto_compuesto_id,
         bodega_id=bodega_id,
@@ -387,21 +384,21 @@ def producir_compuesto_anidado(producto_compuesto_id, cantidad, bodega_id, idcli
             cantidad=0.0,
             costo_unitario=costo_unitario_compuesto,
             costo_total=0.0,
-            ultima_actualizacion=obtener_hora_colombia()  # Usar hora de Colombia
+            ultima_actualizacion=obtener_hora_colombia()
         )
         db.session.add(inventario)
 
     inventario.cantidad = float(inventario.cantidad) + float(cantidad)
     inventario.costo_unitario = costo_unitario_compuesto
     inventario.costo_total = float(inventario.cantidad) * costo_unitario_compuesto
-    inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
+    inventario.ultima_actualizacion = obtener_hora_colombia()
 
     ultimo_kardex = Kardex.query.filter_by(
         producto_id=producto_compuesto_id,
         idcliente=idcliente,
         bodega_destino_id=bodega_id
     ).order_by(Kardex.fecha.desc()).first()
-    referencia_truncada = f"Producción de {producto_compuesto.nombre}"[:100]  # Truncar a 100 caracteres
+    referencia_truncada = f"Producción de {producto_compuesto.nombre}"[:100]
     kardex = Kardex(
         idcliente=idcliente,
         producto_id=producto_compuesto_id,
@@ -582,10 +579,10 @@ def descontar_inventario(producto_id, bodega_id, cantidad, idcliente, referencia
 
     inventario.cantidad = float(inventario.cantidad) - float(cantidad)
     inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
+    inventario.ultima_actualizacion = obtener_hora_colombia()
 
     saldo_cantidad = float(inventario.cantidad)
-    referencia_truncada = referencia[:100]  # Truncar a 100 caracteres
+    referencia_truncada = referencia[:100]
     kardex = Kardex(
         idcliente=idcliente,
         producto_id=producto_id,
@@ -625,7 +622,6 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
     if not producto:
         raise ValueError(f"Producto {producto_compuesto_id} no encontrado")
 
-    # Generar número de orden
     ultimo_numero = db.session.query(db.func.max(OrdenProduccion.numero_orden)).filter(
         OrdenProduccion.idcliente == idcliente
     ).scalar()
@@ -635,14 +631,13 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
     else:
         nuevo_numero = f"OP-{idcliente}-00000001"
 
-    # Crear orden de producción
     orden = OrdenProduccion(
         idcliente=idcliente,
         producto_compuesto_id=producto_compuesto_id,
         cantidad_paquetes=cantidad,
         estado='Creada',
         bodega_produccion_id=bodega_id,
-        fecha_creacion=obtener_hora_colombia(),  # Usar hora de Colombia
+        fecha_creacion=obtener_hora_colombia(),
         fecha_inicio=fecha,
         creado_por=usuario_id,
         numero_orden=nuevo_numero,
@@ -654,7 +649,6 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
 
     logger.debug(f"Orden creada: id={orden.id}, numero_orden={nuevo_numero}, producto_id={producto_compuesto_id}")
 
-    # Procesar materiales
     procesar_materiales(
         producto_compuesto_id=producto_compuesto_id,
         cantidad=cantidad,
@@ -666,7 +660,6 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
         referencia=referencia
     )
 
-    # Calcular costo unitario basado en materiales
     costo_unitario = 0.0
     materiales = MaterialProducto.query.filter_by(
         producto_compuesto_id=producto_compuesto_id, idcliente=idcliente
@@ -680,7 +673,6 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
         costo_unitario += (float(kardex.saldo_costo_unitario) if kardex else 0.0) * float(material.cantidad)
     logger.debug(f"Costo unitario calculado para producto_id={producto_compuesto_id}: {costo_unitario}")
 
-    # Registrar entrada del producto compuesto
     inventario = EstadoInventario.query.filter_by(
         producto_id=producto_compuesto_id,
         bodega_id=bodega_id,
@@ -694,13 +686,13 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
             cantidad=0.0,
             costo_unitario=costo_unitario,
             costo_total=0.0,
-            ultima_actualizacion=obtener_hora_colombia()  # Usar hora de Colombia
+            ultima_actualizacion=obtener_hora_colombia()
         )
         db.session.add(inventario)
 
     inventario.cantidad = float(inventario.cantidad) + float(cantidad)
     inventario.costo_total = float(inventario.cantidad) * costo_unitario
-    inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
+    inventario.ultima_actualizacion = obtener_hora_colombia()
 
     referencia_truncada = f"Producción de {producto.nombre}"[:100]
     kardex = Kardex(
@@ -734,20 +726,18 @@ def producir_y_entregar(producto_compuesto_id, cantidad, bodega_id, idcliente, u
     )
     db.session.add(movimiento)
 
-    # Registrar entrega en entregas_parciales
     entrega = EntregaParcial(
         orden_produccion_id=orden.id,
         cantidad_entregada=float(cantidad),
-        fecha_entrega=obtener_hora_colombia(),  # Usar hora de Colombia
+        fecha_entrega=obtener_hora_colombia(),
         comentario="Entrega total en bodega registrada automáticamente",
         idcliente=idcliente,
         usuario_id=usuario_id
     )
     db.session.add(entrega)
 
-    # Finalizar orden
     orden.estado = 'Finalizada'
-    orden.fecha_finalizacion = obtener_hora_colombia()  # Usar hora de Colombia
+    orden.fecha_finalizacion = obtener_hora_colombia()
     orden.costo_unitario = costo_unitario
     orden.costo_total = costo_unitario * cantidad
     db.session.flush()
@@ -773,7 +763,6 @@ def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, o
         logger.debug(f"Material: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}, es_compuesto={producto_base.es_producto_compuesto}")
 
         if producto_base.es_producto_compuesto:
-            # Producir el producto compuesto anidado
             costo_unitario = producir_compuesto_anidado(
                 producto_compuesto_id=material.producto_base_id,
                 cantidad=cantidad_consumida,
@@ -784,52 +773,18 @@ def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, o
                 fecha=fecha,
                 referencia=referencia
             )
-            # Descontar el producto compuesto anidado
-            inventario = db.session.query(EstadoInventario).filter(
-                and_(
-                    EstadoInventario.producto_id == material.producto_base_id,
-                    EstadoInventario.bodega_id == bodega_id,
-                    EstadoInventario.idcliente == idcliente
-                )
-            ).first()
-            if not inventario or float(inventario.cantidad) < float(cantidad_consumida):
-                raise ValueError(f"No hay suficiente inventario para producto_base_id={material.producto_base_id} tras producción")
+            db.session.flush()  # Asegurar que la producción se refleje en la base de datos
 
-            inventario.cantidad = float(inventario.cantidad) - float(cantidad_consumida)
-            inventario.costo_total = float(inventario.cantidad) * costo_unitario
-            inventario.ultima_actualizacion = obtener_hora_colombia()  # Usar hora de Colombia
-
-            referencia_truncada = f"Consumo de {producto_base.nombre} para orden {numero_orden}"[:100]  # Truncar a 100 caracteres
-            kardex_salida = Kardex(
-                idcliente=idcliente,
+            referencia_truncada = f"Consumo de {producto_base.nombre} para orden {numero_orden}"[:100]
+            descontar_inventario(
                 producto_id=material.producto_base_id,
-                bodega_origen_id=bodega_id,
-                fecha=fecha,
-                tipo_movimiento='SALIDA',
+                bodega_id=bodega_id,
                 cantidad=cantidad_consumida,
-                costo_unitario=costo_unitario,
-                costo_total=costo_unitario * cantidad_consumida,
-                saldo_cantidad=float(inventario.cantidad),
-                saldo_costo_unitario=costo_unitario,
-                saldo_costo_total=float(inventario.cantidad) * costo_unitario,
-                referencia=referencia_truncada
-            )
-            db.session.add(kardex_salida)
-
-            consecutivo = generar_consecutivo()
-            movimiento = RegistroMovimientos(
                 idcliente=idcliente,
-                consecutivo=consecutivo,
-                tipo_movimiento='SALIDA',
-                producto_id=material.producto_base_id,
-                bodega_origen_id=bodega_id,
-                cantidad=cantidad_consumida,
+                referencia=referencia_truncada,
                 fecha=fecha,
-                descripcion=referencia_truncada,
-                costo_unitario=costo_unitario,
-                costo_total=costo_unitario * cantidad_consumida
+                skip_inventory_check=True  # No verificar inventario, ya que se produjo
             )
-            db.session.add(movimiento)
 
             detalle = DetalleProduccion(
                 idcliente=idcliente,
@@ -838,12 +793,11 @@ def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, o
                 cantidad_consumida=cantidad_consumida,
                 cantidad_producida=0,
                 bodega_destino_id=bodega_id,
-                fecha_registro=obtener_hora_colombia()  # Usar hora de Colombia
+                fecha_registro=obtener_hora_colombia()
             )
             db.session.add(detalle)
             logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}")
         else:
-            # Producto base: verificar y descontar
             disponible, cantidad_actual = verificar_inventario(material.producto_base_id, bodega_id, cantidad_consumida, idcliente)
             if not disponible:
                 raise ValueError(f"No hay suficiente inventario para producto_base_id={material.producto_base_id}, requerido={cantidad_consumida}, disponible={cantidad_actual}")
@@ -859,7 +813,7 @@ def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, o
             saldo_cantidad = float(ultimo_kardex.saldo_cantidad) if ultimo_kardex else 0.0
             saldo_costo_total = float(ultimo_kardex.saldo_costo_total) if ultimo_kardex else 0.0
 
-            referencia_truncada = f"Consumo para orden {numero_orden}"[:100]  # Truncar a 100 caracteres
+            referencia_truncada = f"Consumo para orden {numero_orden}"[:100]
             kardex_salida = Kardex(
                 idcliente=idcliente,
                 producto_id=material.producto_base_id,
@@ -907,7 +861,7 @@ def procesar_materiales(producto_compuesto_id, cantidad, bodega_id, idcliente, o
                 cantidad_consumida=cantidad_consumida,
                 cantidad_producida=0,
                 bodega_destino_id=bodega_id,
-                fecha_registro=obtener_hora_colombia()  # Usar hora de Colombia
+                fecha_registro=obtener_hora_colombia()
             )
             db.session.add(detalle)
             logger.debug(f"Registrado detalle_produccion: producto_base_id={material.producto_base_id}, cantidad_consumida={cantidad_consumida}")
