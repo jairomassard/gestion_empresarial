@@ -47,13 +47,11 @@ app.config.from_object(Config)
 #logger = logging.getLogger(__name__)
 
 # Configurar logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[logging.StreamHandler(sys.stderr)]
-)
 logger = logging.getLogger(__name__)
-logger.handlers[0].flush = sys.stderr.flush
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stderr)
+handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+logger.addHandler(handler)
 
 
 # Configurar una clave secreta para la sesión (necesaria para que funcione)
@@ -6898,8 +6896,7 @@ def generar_kardex_pdf():
     except Exception as e:
         logger.error(f"Error general al generar PDF del Kardex: {str(e)}", exc_info=True)
         return jsonify({'error': f'Error al generar el PDF: {str(e)}'}), 500
-    
-    
+
 
 # ENDPOINTS PAGINA DE TRANSLADOS CANTIDADES:
 @app.route('/api/trasladar_varios', methods=['POST'])
