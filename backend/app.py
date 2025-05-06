@@ -19,6 +19,7 @@ from io import TextIOWrapper, BytesIO
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from sqlalchemy import func, and_
+from sqlalchemy.sql import text
 from flask import jsonify, request, send_file
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from datetime import datetime
@@ -6402,7 +6403,7 @@ def generar_kardex_pdf():
         # Verificar conexión a la base de datos
         logger.debug("Verificando conexión a la base de datos")
         try:
-            db.session.execute("SELECT 1")
+            db.session.execute(text("SELECT 1"))
         except Exception as e:
             logger.error(f"Error al conectar con la base de datos: {str(e)}", exc_info=True)
             return jsonify({'error': 'Error de conexión con la base de datos'}), 500
