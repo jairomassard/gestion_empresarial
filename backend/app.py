@@ -33,6 +33,7 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 from reportlab.lib.styles import getSampleStyleSheet
+
 from decimal import Decimal
 import locale
 import unicodedata, os
@@ -48,11 +49,13 @@ app.config.from_object(Config)
 #logger = logging.getLogger(__name__)
 
 # Configurar logging
+# Configurar logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 handler = logging.StreamHandler(sys.stderr)
 handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
 logger.addHandler(handler)
+
 
 
 # Configurar una clave secreta para la sesión (necesaria para que funcione)
@@ -6373,6 +6376,7 @@ def generar_kardex_pdf():
         if not has_permission(claims, 'inventario', 'kardex', 'ver'):
             logger.error("Usuario sin permiso para generar PDF del Kardex")
             return jsonify({'error': 'No tienes permiso para generar el PDF del Kardex'}), 403
+        logger.debug("Permisos verificados correctamente")
 
         # Obtener parámetros
         logger.debug("Obteniendo parámetros de la solicitud")
@@ -6390,12 +6394,14 @@ def generar_kardex_pdf():
         if not all([codigo_producto, fecha_inicio, fecha_fin, idcliente]):
             logger.error(f"Faltan parámetros: codigo={codigo_producto}, fecha_inicio={fecha_inicio}, fecha_fin={fecha_fin}, idcliente={idcliente}")
             return jsonify({'error': 'Faltan parámetros (código, fecha_inicio, fecha_fin, idcliente)'}), 400
+        logger.debug("Parámetros validados correctamente")
 
         # Convertir fechas
         logger.debug("Convirtiendo fechas")
         try:
             fecha_inicio_dt = datetime.strptime(fecha_inicio, '%Y-%m-%d')
             fecha_fin_dt = datetime.strptime(fecha_fin, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+            logger.debug(f"Fechas convertidas: fecha_inicio_dt={fecha_inicio_dt}, fecha_fin_dt={fecha_fin_dt}")
         except ValueError as e:
             logger.error(f"Formato de fecha inválido: {str(e)}", exc_info=True)
             return jsonify({'error': 'Formato de fecha inválido. Use YYYY-MM-DD'}), 400
@@ -6404,6 +6410,7 @@ def generar_kardex_pdf():
         logger.debug("Verificando conexión a la base de datos")
         try:
             db.session.execute(text("SELECT 1"))
+            logger.debug("Conexión a la base de datos exitosa")
         except Exception as e:
             logger.error(f"Error al conectar con la base de datos: {str(e)}", exc_info=True)
             return jsonify({'error': 'Error de conexión con la base de datos'}), 500
@@ -6414,6 +6421,7 @@ def generar_kardex_pdf():
         if not cliente:
             logger.error(f"Cliente con ID {idcliente} no encontrado")
             return jsonify({'error': f'Cliente con ID {idcliente} no encontrado'}), 404
+        logger.debug(f"Cliente encontrado: {cliente.nombre}")
 
         # Verificar producto
         logger.debug(f"Buscando producto con código {codigo_producto}")
@@ -6421,6 +6429,7 @@ def generar_kardex_pdf():
         if not producto:
             logger.error(f"Producto con código {codigo_producto} no encontrado")
             return jsonify({'error': f'Producto con código {codigo_producto} no encontrado'}), 404
+        logger.debug(f"Producto encontrado: {producto.nombre}")
 
         # Obtener bodegas
         logger.debug("Obteniendo bodegas")
@@ -6433,6 +6442,7 @@ def generar_kardex_pdf():
                 if not bodegas_ids:
                     logger.error(f"Ninguna bodega encontrada para {bodegas_list}")
                     return jsonify({'error': 'Ninguna de las bodegas especificadas fue encontrada'}), 404
+                logger.debug(f"Bodegas encontradas: {bodegas_ids}")
             except Exception as e:
                 logger.error(f"Error al obtener bodegas: {str(e)}", exc_info=True)
                 return jsonify({'error': f'Error al procesar bodegas: {str(e)}'}), 500
@@ -6451,6 +6461,7 @@ def generar_kardex_pdf():
                 (Kardex.bodega_origen_id.in_(bodegas_ids)) | (Kardex.bodega_destino_id.in_(bodegas_ids))
             )
         kardex_interno = kardex_interno_query.order_by(Kardex.fecha).all()
+        logger.debug(f"Movimientos iniciales encontrados: {len(kardex_interno)}")
 
         for movimiento in kardex_interno:
             cantidad = float(movimiento.cantidad or 0)
@@ -6489,6 +6500,7 @@ def generar_kardex_pdf():
                 total_saldo_global += saldo
                 total_costo_global += costo_total
         saldo_costo_unitario_global = total_costo_global / total_saldo_global if total_saldo_global > 0 else 0.0
+        logger.debug(f"Saldos iniciales preparados: {saldo_bodegas_nombres}")
 
         # Consultar movimientos
         logger.debug("Consultando movimientos en el rango de fechas")
@@ -6503,6 +6515,7 @@ def generar_kardex_pdf():
                 (Kardex.bodega_origen_id.in_(bodegas_ids)) | (Kardex.bodega_destino_id.in_(bodegas_ids))
             )
         movimientos = movimientos_query.order_by(Kardex.fecha).all()
+        logger.debug(f"Movimientos encontrados: {len(movimientos)}")
 
         kardex = []
         saldo_actual = saldo_bodegas.copy()
@@ -6663,6 +6676,7 @@ def generar_kardex_pdf():
             return jsonify({
                 'error': f'No hay movimientos para el producto {codigo_producto} en {bodegas_str} en el rango de fechas seleccionado'
             }), 404
+        logger.debug(f"Kardex generado con {len(kardex)} entradas")
 
         # Generar PDF
         logger.debug("Iniciando generación del PDF")
@@ -6715,6 +6729,7 @@ def generar_kardex_pdf():
         total_stock = round(sum(r['stock_final'] for r in resumen), 2)
         total_valor = sum(r['valor_acumulado'] for r in resumen)
         cpp_global = total_valor / total_stock if total_stock > 0 else 0.0
+        logger.debug(f"Resumen generado: {resumen}")
 
         logger.debug("Dibujando resumen en PDF")
         try:
