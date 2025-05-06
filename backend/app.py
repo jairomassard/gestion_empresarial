@@ -42,7 +42,17 @@ app = Flask(__name__, static_folder='static', static_url_path='')
 app.config.from_object(Config)
 
 # Configurar logging para ver errores detallados
-logging.basicConfig(level=logging.DEBUG)
+#logging.basicConfig(level=logging.DEBUG)
+#logger = logging.getLogger(__name__)
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stderr)  # Forzar logs a stderr
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Configurar una clave secreta para la sesión (necesaria para que funcione)
@@ -884,7 +894,17 @@ def mapear_rango_horario(rango):
     except:
         logging.warning(f"Rango horario inválido: {rango}, se mantiene sin cambios")
         return rango
-    
+
+
+def clean_string(text):
+    """Eliminar caracteres no imprimibles y normalizar texto."""
+    if text is None:
+        return ""
+    text = str(text)
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    return text[:100]
+
+
 
 # Enpooints para listar las clases de modelos registrados
 # Ruta para servir el frontend (index.html)
@@ -6336,15 +6356,18 @@ def consultar_kardex():
 @app.route('/api/kardex/pdf', methods=['GET'])
 @jwt_required()
 def generar_kardex_pdf():
+    logger.debug("Iniciando generación de PDF para Kardex")
     try:
         # Verificar reportlab
+        logger.debug("Verificando dependencia reportlab")
         try:
             from reportlab.pdfgen import canvas
         except ImportError as e:
-            logger.error(f"Dependencia 'reportlab' no encontrada: {str(e)}")
+            logger.error(f"Dependencia 'reportlab' no encontrada: {str(e)}", exc_info=True)
             return jsonify({'error': 'Error del servidor: ReportLab no está instalado'}), 500
 
         # Configurar locale
+        logger.debug("Configurando locale")
         try:
             locale.setlocale(locale.LC_ALL, 'es_CO.UTF-8')
             logger.debug("Locale configurado a es_CO.UTF-8")
@@ -6353,6 +6376,7 @@ def generar_kardex_pdf():
             locale.setlocale(locale.LC_ALL, '')
 
         # Verificar permisos
+        logger.debug("Verificando permisos del usuario")
         claims = get_jwt()
         logger.debug(f"Claims recibidos: {claims}")
         if not has_permission(claims, 'inventario', 'kardex', 'ver'):
@@ -6360,6 +6384,7 @@ def generar_kardex_pdf():
             return jsonify({'error': 'No tienes permiso para generar el PDF del Kardex'}), 403
 
         # Obtener parámetros
+        logger.debug("Obteniendo parámetros de la solicitud")
         codigo_producto = request.args.get('codigo')
         fecha_inicio = request.args.get('fecha_inicio')
         fecha_fin = request.args.get('fecha_fin')
@@ -6371,27 +6396,31 @@ def generar_kardex_pdf():
             return jsonify({'error': 'Faltan parámetros (código, fecha_inicio, fecha_fin, idcliente).'}), 400
 
         # Convertir fechas
+        logger.debug("Convirtiendo fechas")
         try:
             fecha_inicio_dt = datetime.strptime(fecha_inicio, '%Y-%m-%d')
             fecha_fin_dt = datetime.strptime(fecha_fin, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
             logger.debug(f"Fechas convertidas: {fecha_inicio_dt} a {fecha_fin_dt}")
         except ValueError as ve:
-            logger.error(f"Formato de fecha inválido: {str(ve)}")
+            logger.error(f"Formato de fecha inválido: {str(ve)}", exc_info=True)
             return jsonify({'error': 'Formato de fecha inválido. Use YYYY-MM-DD.'}), 400
 
         # Verificar cliente
+        logger.debug(f"Buscando cliente con ID {idcliente}")
         cliente = Clientes.query.filter_by(idcliente=idcliente).first()
         if not cliente:
             logger.error(f"Cliente con ID {idcliente} no encontrado")
             return jsonify({'error': f'Cliente con ID {idcliente} no encontrado.'}), 404
 
         # Verificar producto
+        logger.debug(f"Buscando producto con código {codigo_producto}")
         producto = Producto.query.filter_by(codigo=codigo_producto, idcliente=idcliente).first()
         if not producto:
             logger.error(f"Producto con código {codigo_producto} no encontrado")
             return jsonify({'error': f'Producto con código {codigo_producto} no encontrado.'}), 404
 
         # Obtener bodegas
+        logger.debug("Obteniendo bodegas")
         bodegas_ids = None
         if bodegas:
             bodegas_list = bodegas.split(',')
@@ -6403,6 +6432,7 @@ def generar_kardex_pdf():
             logger.debug(f"Bodegas IDs: {bodegas_ids}")
 
         # Calcular saldo inicial
+        logger.debug("Calculando saldos iniciales")
         saldo_bodegas = {}
         saldo_costo_total_bodegas = {}
         kardex_interno_query = Kardex.query.filter(
@@ -6420,6 +6450,7 @@ def generar_kardex_pdf():
         for movimiento in kardex_interno:
             cantidad = float(movimiento.cantidad or 0)
             costo_total = float(movimiento.costo_total or 0)
+            logger.debug(f"Procesando movimiento inicial: {movimiento.tipo_movimiento}, cantidad={cantidad}, costo_total={costo_total}")
             if movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
                 saldo_bodegas[movimiento.bodega_origen_id] = saldo_bodegas.get(movimiento.bodega_origen_id, 0) - cantidad
                 saldo_costo_total_bodegas[movimiento.bodega_origen_id] = saldo_costo_total_bodegas.get(movimiento.bodega_origen_id, 0) - costo_total
@@ -6435,6 +6466,7 @@ def generar_kardex_pdf():
                     saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + costo_total
 
         # Preparar saldos iniciales
+        logger.debug("Preparando saldos iniciales por bodega")
         saldo_bodegas_nombres = {}
         total_saldo_global = 0
         total_costo_global = 0
@@ -6455,8 +6487,10 @@ def generar_kardex_pdf():
         logger.debug(f"Saldos iniciales: {saldo_bodegas_nombres}")
 
         saldo_costo_unitario_global = total_costo_global / total_saldo_global if total_saldo_global > 0 else 0.0
+        logger.debug(f"Saldo costo unitario global: {saldo_costo_unitario_global}")
 
         # Consultar movimientos
+        logger.debug("Consultando movimientos en el rango de fechas")
         movimientos_query = Kardex.query.filter(
             Kardex.producto_id == producto.id,
             Kardex.idcliente == idcliente,
@@ -6477,6 +6511,7 @@ def generar_kardex_pdf():
         total_costo_global_actual = total_costo_global
 
         # Registrar saldos iniciales
+        logger.debug("Registrando saldos iniciales en kardex")
         for bodega_nombre, saldos in saldo_bodegas_nombres.items():
             kardex.append({
                 'fecha': fecha_inicio_dt.strftime('%Y-%m-%d 00:00:00'),
@@ -6493,7 +6528,9 @@ def generar_kardex_pdf():
             })
 
         # Procesar movimientos
+        logger.debug("Procesando movimientos")
         for movimiento in movimientos:
+            logger.debug(f"Procesando movimiento: {movimiento.tipo_movimiento}, fecha={movimiento.fecha}")
             if movimiento.tipo_movimiento == 'ENTRADA' and movimiento.bodega_destino_id:
                 bodega = movimiento.bodega_destino.nombre if movimiento.bodega_destino else 'N/A'
                 saldo_antes = saldo_actual.get(movimiento.bodega_destino_id, 0)
@@ -6527,7 +6564,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_bodega,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': (movimiento.referencia or 'Entrada registrada')[:100]
+                    'descripcion': clean_string(movimiento.referencia or 'Entrada registrada')
                 })
 
             elif movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
@@ -6564,7 +6601,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_bodega,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': (movimiento.referencia or 'Salida registrada')[:100]
+                    'descripcion': clean_string(movimiento.referencia or 'Salida registrada')
                 })
 
             elif movimiento.tipo_movimiento == 'TRASLADO' and movimiento.bodega_origen_id and movimiento.bodega_destino_id:
@@ -6593,7 +6630,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_origen,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': (f'Traslado a {movimiento.bodega_destino.nombre}. Ref: {movimiento.referencia or "N/A"}')[:100]
+                    'descripcion': clean_string(f'Traslado a {movimiento.bodega_destino.nombre}. Ref: {movimiento.referencia or "N/A"}')
                 })
 
                 bodega_destino = movimiento.bodega_destino.nombre
@@ -6618,7 +6655,7 @@ def generar_kardex_pdf():
                     'saldo_costo_unitario': saldo_costo_unitario_destino,
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
                     'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': (f'Traslado desde {bodega_origen}. Ref: {movimiento.referencia or "N/A"}')[:100]
+                    'descripcion': clean_string(f'Traslado desde {bodega_origen}. Ref: {movimiento.referencia or "N/A"}')
                 })
 
         if not kardex:
@@ -6629,166 +6666,266 @@ def generar_kardex_pdf():
             }), 404
 
         # Generar PDF
+        logger.debug("Iniciando generación del PDF")
         buffer = BytesIO()
-        pdf = canvas.Canvas(buffer, pagesize=landscape(letter))
-        pdf.setTitle(f"Kardex_{codigo_producto}_{fecha_inicio}_{fecha_fin}")
-        pdf.setFont("Helvetica-Bold", 14)
-        pdf.drawCentredString(400, 550, "Kardex de Inventario")
-        pdf.setFont("Helvetica", 10)
-        pdf.drawString(30, 530, f"Cliente: {cliente.nombre}")
-        pdf.drawString(30, 510, f"Producto: {producto.nombre} (Código: {producto.codigo})")
-        pdf.drawString(30, 490, f"Rango de Fechas: {fecha_inicio} a {fecha_fin}")
-        bodegas_str = ", ".join(bodegas.split(',')) if bodegas else "Todos los almacenes"
-        pdf.drawString(30, 470, f"Almacenes: {bodegas_str}")
-        y = 450
-        logger.debug("Encabezado del PDF generado")
+        logger.debug("Creando canvas de ReportLab")
+        try:
+            pdf = canvas.Canvas(buffer, pagesize=landscape(letter))
+        except Exception as e:
+            logger.error(f"Error al crear canvas de ReportLab: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al crear canvas: {str(e)}'}), 500
+
+        logger.debug("Configurando título y fuentes")
+        try:
+            pdf.setTitle(f"Kardex_{codigo_producto}_{fecha_inicio}_{fecha_fin}")
+            try:
+                pdf.setFont("Helvetica-Bold", 14)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica-Bold no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 14)
+            pdf.drawCentredString(400, 550, clean_string("Kardex de Inventario"))
+            try:
+                pdf.setFont("Helvetica", 10)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 10)
+            pdf.drawString(30, 530, clean_string(f"Cliente: {cliente.nombre}"))
+            pdf.drawString(30, 510, clean_string(f"Producto: {producto.nombre} (Código: {producto.codigo})"))
+            pdf.drawString(30, 490, clean_string(f"Rango de Fechas: {fecha_inicio} a {fecha_fin}"))
+            bodegas_str = ", ".join(bodegas.split(',')) if bodegas else "Todos los almacenes"
+            pdf.drawString(30, 470, clean_string(f"Almacenes: {bodegas_str}"))
+            y = 450
+            logger.debug("Encabezado del PDF generado")
+        except Exception as e:
+            logger.error(f"Error al configurar encabezado del PDF: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al configurar encabezado: {str(e)}'}), 500
 
         # Resumen por almacén
-        almacenes = sorted(set(mov['bodega'] for mov in kardex if mov['bodega'] and mov['bodega'] != 'N/A'))
-        resumen = []
-        for almacen in almacenes:
-            movimientos_almacen = [m for m in kardex if m['bodega'] == almacen]
-            stock_final = sum(
-                mov['cantidad'] if mov['tipo'] == 'ENTRADA' else -mov['cantidad'] if mov['tipo'] == 'SALIDA' else 0
-                for mov in movimientos_almacen
-            )
-            valor_acumulado = sum(
-                mov['costo_total'] if mov['tipo'] == 'ENTRADA' else -mov['costo_total'] if mov['tipo'] == 'SALIDA' else 0
-                for mov in movimientos_almacen
-            )
-            entradas = [m for m in movimientos_almacen if m['tipo'] == 'ENTRADA']
-            cpp = sum(m['costo_unitario'] for m in entradas) / len(entradas) if entradas else 0.0
-            resumen.append({
-                'almacen': almacen,
-                'stock_final': round(stock_final, 2),
-                'valor_acumulado': round(valor_acumulado, 2),
-                'cpp': round(cpp, 2) if stock_final > 0 else 0.0,
-            })
-        total_stock = round(sum(r['stock_final'] for r in resumen), 2)
-        total_valor = round(sum(r['valor_acumulado'] for r in resumen), 2)
-        cpp_global = total_valor / total_stock if total_stock > 0 else 0.0
-        logger.debug(f"Resumen por almacén: {resumen}")
+        logger.debug("Generando resumen por almacén")
+        try:
+            almacenes = sorted(set(mov['bodega'] for mov in kardex if mov['bodega'] and mov['bodega'] != 'N/A'))
+            resumen = []
+            for almacen in almacenes:
+                movimientos_almacen = [m for m in kardex if m['bodega'] == almacen]
+                stock_final = sum(
+                    mov['cantidad'] if mov['tipo'] == 'ENTRADA' else -mov['cantidad'] if mov['tipo'] == 'SALIDA' else 0
+                    for mov in movimientos_almacen
+                )
+                valor_acumulado = sum(
+                    mov['costo_total'] if mov['tipo'] == 'ENTRADA' else -mov['costo_total'] if mov['tipo'] == 'SALIDA' else 0
+                    for mov in movimientos_almacen
+                )
+                entradas = [m for m in movimientos_almacen if m['tipo'] == 'ENTRADA']
+                cpp = sum(m['costo_unitario'] for m in entradas) / len(entradas) if entradas else 0.0
+                resumen.append({
+                    'almacen': almacen,
+                    'stock_final': round(stock_final, 2),
+                    'valor_acumulado': round(valor_acumulado, 2),
+                    'cpp': round(cpp, 2) if stock_final > 0 else 0.0,
+                })
+            total_stock = round(sum(r['stock_final'] for r in resumen), 2)
+            total_valor = round(sum(r['valor_acumulado'] for r in resumen), 2)
+            cpp_global = total_valor / total_stock if total_stock > 0 else 0.0
+            logger.debug(f"Resumen por almacén: {resumen}")
+        except Exception as e:
+            logger.error(f"Error al generar resumen por almacén: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al generar resumen: {str(e)}'}), 500
 
-        pdf.setFont("Helvetica-Bold", 12)
-        pdf.drawString(30, y, "Resumen por Almacén")
-        pdf.line(30, y - 5, 750, y - 5)
-        y -= 20
-        pdf.setFont("Helvetica", 10)
-        pdf.drawString(30, y, f"CPP Global: {'N/A' if cpp_global == 0 else locale.currency(cpp_global, grouping=True)}")
-        y -= 20
+        logger.debug("Dibujando resumen en PDF")
+        try:
+            try:
+                pdf.setFont("Helvetica-Bold", 12)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica-Bold no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 12)
+            pdf.drawString(30, y, clean_string("Resumen por Almacén"))
+            pdf.line(30, y - 5, 750, y - 5)
+            y -= 20
+            try:
+                pdf.setFont("Helvetica", 10)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 10)
+            cpp_global_str = 'N/A' if cpp_global == 0 else locale.currency(cpp_global, grouping=True)
+            pdf.drawString(30, y, clean_string(f"CPP Global: {cpp_global_str}"))
+            y -= 20
 
-        pdf.setFont("Helvetica-Bold", 9)
-        pdf.drawString(30, y, "Almacén")
-        pdf.drawString(150, y, "Stock Final")
-        pdf.drawString(250, y, "Valor Acumulado")
-        pdf.drawString(350, y, "CPP")
-        pdf.line(30, y - 5, 450, y - 5)
-        y -= 15
-
-        pdf.setFont("Helvetica", 9)
-        for r in resumen:
-            pdf.drawString(30, y, r['almacen'][:30])
-            pdf.drawString(150, y, f"{locale.format_string('%.2f', r['stock_final'], grouping=True)}")
-            pdf.drawString(250, y, f"{locale.currency(r['valor_acumulado'], grouping=True)}")
-            pdf.drawString(350, y, f"{'N/A' if r['cpp'] == 0 else locale.currency(r['cpp'], grouping=True)}")
+            try:
+                pdf.setFont("Helvetica-Bold", 9)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica-Bold no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 9)
+            pdf.drawString(30, y, clean_string("Almacén"))
+            pdf.drawString(150, y, clean_string("Stock Final"))
+            pdf.drawString(250, y, clean_string("Valor Acumulado"))
+            pdf.drawString(350, y, clean_string("CPP"))
+            pdf.line(30, y - 5, 450, y - 5)
             y -= 15
 
-        pdf.setFont("Helvetica-Bold", 9)
-        pdf.drawString(30, y, "Total")
-        pdf.drawString(150, y, f"{locale.format_string('%.2f', total_stock, grouping=True)}")
-        pdf.drawString(250, y, f"{'N/A' if total_valor == 0 else locale.currency(total_valor, grouping=True)}")
-        y -= 25
+            try:
+                pdf.setFont("Helvetica", 9)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 9)
+            for r in resumen:
+                logger.debug(f"Dibujando resumen para almacén: {r['almacen']}")
+                pdf.drawString(30, y, clean_string(r['almacen'])[:30])
+                pdf.drawString(150, y, clean_string(locale.format_string('%.2f', r['stock_final'], grouping=True)))
+                pdf.drawString(250, y, clean_string(locale.currency(r['valor_acumulado'], grouping=True)))
+                cpp_str = 'N/A' if r['cpp'] == 0 else locale.currency(r['cpp'], grouping=True)
+                pdf.drawString(350, y, clean_string(cpp_str))
+                y -= 15
+
+            try:
+                pdf.setFont("Helvetica-Bold", 9)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica-Bold no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 9)
+            pdf.drawString(30, y, clean_string("Total"))
+            pdf.drawString(150, y, clean_string(locale.format_string('%.2f', total_stock, grouping=True)))
+            total_valor_str = 'N/A' if total_valor == 0 else locale.currency(total_valor, grouping=True)
+            pdf.drawString(250, y, clean_string(total_valor_str))
+            y -= 25
+            logger.debug("Resumen por almacén dibujado")
+        except Exception as e:
+            logger.error(f"Error al dibujar resumen en PDF: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al dibujar resumen: {str(e)}'}), 500
 
         # Tabla de movimientos
-        if y < 100:
-            pdf.showPage()
-            y = 550
+        logger.debug("Generando tabla de movimientos")
+        try:
+            if y < 100:
+                pdf.showPage()
+                y = 550
+                logger.debug("Nueva página creada para movimientos")
 
-        pdf.setFont("Helvetica-Bold", 12)
-        pdf.drawString(30, y, "Movimientos del Producto")
-        pdf.line(30, y - 5, 750, y - 5)
-        y -= 20
+            try:
+                pdf.setFont("Helvetica-Bold", 12)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica-Bold no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 12)
+            pdf.drawString(30, y, clean_string("Movimientos del Producto"))
+            pdf.line(30, y - 5, 750, y - 5)
+            y -= 20
 
-        # Definir anchos de columnas
-        ancho_fecha = 90
-        ancho_documento = 60
-        ancho_almacen = 80
-        ancho_cantidad = 50
-        ancho_costo = 50
-        ancho_costo_total = 60
-        ancho_cantidad_acumulada = 60
-        ancho_valor_acumulado = 70
-        ancho_cpp = 50
-        ancho_cpp_global = 60
-        ancho_descripcion = max(100, 750 - (
-            ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo +
-            ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global + 30
-        ))
-        logger.debug(f"Ancho descripción calculado: {ancho_descripcion}")
+            # Definir anchos de columnas
+            ancho_fecha = 90
+            ancho_documento = 60
+            ancho_almacen = 80
+            ancho_cantidad = 50
+            ancho_costo = 50
+            ancho_costo_total = 60
+            ancho_cantidad_acumulada = 60
+            ancho_valor_acumulado = 70
+            ancho_cpp = 50
+            ancho_cpp_global = 60
+            ancho_descripcion = max(100, 750 - (
+                ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo +
+                ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global + 30
+            ))
+            logger.debug(f"Ancho descripción calculado: {ancho_descripcion}")
 
-        # Encabezados de tabla
-        pdf.setFont("Helvetica-Bold", 8)
-        pdf.drawString(30, y, "Fecha")
-        pdf.drawString(30 + ancho_fecha, y, "Tipo")
-        pdf.drawString(30 + ancho_fecha + ancho_documento, y, "Almacén")
-        pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen, y, "Cantidad")
-        pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad, y, "Costo Unit.")
-        pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo, y, "Costo Total")
-        pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total, y, "Cant. Acum.")
-        pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada, y, "Valor Acum.")
-        pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado, y, "CPP")
-        pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp, y, "CPP Global")
-        pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global, y, "Descripción")
-        pdf.line(30, y - 5, 750, y - 5)
-        y -= 15
+            # Encabezados de tabla
+            try:
+                pdf.setFont("Helvetica-Bold", 8)
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica-Bold no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 8)
+            pdf.drawString(30, y, clean_string("Fecha"))
+            pdf.drawString(30 + ancho_fecha, y, clean_string("Tipo"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento, y, clean_string("Almacén"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen, y, clean_string("Cantidad"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad, y, clean_string("Costo Unit."))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo, y, clean_string("Costo Total"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total, y, clean_string("Cant. Acum."))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada, y, clean_string("Valor Acum."))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado, y, clean_string("CPP"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp, y, clean_string("CPP Global"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global, y, clean_string("Descripción"))
+            pdf.line(30, y - 5, 750, y - 5)
+            y -= 15
+            logger.debug("Encabezados de tabla dibujados")
+        except Exception as e:
+            logger.error(f"Error al dibujar encabezados de tabla: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al dibujar encabezados: {str(e)}'}), 500
 
         # Filas de movimientos
-        pdf.setFont("Helvetica", 7)
-        for movimiento in kardex:
-            if y < 50:
-                pdf.showPage()
+        logger.debug("Dibujando filas de movimientos")
+        try:
+            try:
                 pdf.setFont("Helvetica", 7)
-                y = 550
+            except Exception as e:
+                logger.warning(f"Fuente Helvetica no disponible: {str(e)}. Usando Times-Roman")
+                pdf.setFont("Times-Roman", 7)
+            for movimiento in kardex:
+                logger.debug(f"Dibujando movimiento: {movimiento['tipo']}, fecha={movimiento['fecha']}")
+                if y < 50:
+                    pdf.showPage()
+                    try:
+                        pdf.setFont("Helvetica", 7)
+                    except Exception as e:
+                        logger.warning(f"Fuente Helvetica no disponible: {str(e)}. Usando Times-Roman")
+                        pdf.setFont("Times-Roman", 7)
+                    y = 550
+                    logger.debug("Nueva página creada para movimientos")
 
-            cantidad = f"-{movimiento['cantidad']:.3f}" if movimiento['tipo'] == "SALIDA" else f"{movimiento['cantidad']:.3f}"
-            costo_total = f"-${movimiento['costo_total']:.2f}" if movimiento['tipo'] == "SALIDA" else f"${movimiento['costo_total']:.2f}"
-            descripcion = movimiento['descripcion'][:100]
+                cantidad = f"-{movimiento['cantidad']:.3f}" if movimiento['tipo'] == "SALIDA" else f"{movimiento['cantidad']:.3f}"
+                costo_total = f"-${movimiento['costo_total']:.2f}" if movimiento['tipo'] == "SALIDA" else f"${movimiento['costo_total']:.2f}"
+                descripcion = clean_string(movimiento['descripcion'])
 
-            pdf.drawString(30, y, movimiento['fecha'])
-            pdf.drawString(30 + ancho_fecha, y, movimiento['tipo'])
-            pdf.drawString(30 + ancho_fecha + ancho_documento, y, movimiento['bodega'][:30] or "N/A")
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen, y, cantidad)
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad, y, f"${movimiento['costo_unitario']:.2f}")
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo, y, costo_total)
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total, y, f"{movimiento['saldo']:.3f}")
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada, y, f"${movimiento['saldo_costo_total']:.2f}")
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado, y, f"${movimiento['saldo_costo_unitario']:.2f}")
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp, y, f"${movimiento['saldo_costo_unitario_global']:.2f}")
-            pdf.drawString(
-                30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo +
-                ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global,
-                y, descripcion
-            )
-            y -= 12
+                logger.debug(f"Valores a dibujar: fecha={movimiento['fecha']}, tipo={movimiento['tipo']}, bodega={movimiento['bodega']}, cantidad={cantidad}, costo_unitario={movimiento['costo_unitario']}, costo_total={costo_total}, saldo={movimiento['saldo']}, saldo_costo_total={movimiento['saldo_costo_total']}, saldo_costo_unitario={movimiento['saldo_costo_unitario']}, saldo_costo_unitario_global={movimiento['saldo_costo_unitario_global']}, descripcion={descripcion}")
 
-        pdf.save()
-        buffer.seek(0)
-        logger.debug("PDF generado en buffer")
+                pdf.drawString(30, y, clean_string(movimiento['fecha']))
+                pdf.drawString(30 + ancho_fecha, y, clean_string(movimiento['tipo']))
+                pdf.drawString(30 + ancho_fecha + ancho_documento, y, clean_string(movimiento['bodega'])[:30] or "N/A")
+                pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen, y, clean_string(cantidad))
+                pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad, y, clean_string(f"${movimiento['costo_unitario']:.2f}"))
+                pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo, y, clean_string(costo_total))
+                pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total, y, clean_string(f"{movimiento['saldo']:.3f}"))
+                pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada, y, clean_string(f"${movimiento['saldo_costo_total']:.2f}"))
+                pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado, y, clean_string(f"${movimiento['saldo_costo_unitario']:.2f}"))
+                pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp, y, clean_string(f"${movimiento['saldo_costo_unitario_global']:.2f}"))
+                pdf.drawString(
+                    30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo +
+                    ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global,
+                    y, clean_string(descripcion)
+                )
+                y -= 12
+            logger.debug("Filas de movimientos dibujadas")
+        except Exception as e:
+            logger.error(f"Error al dibujar filas de movimientos: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al dibujar movimientos: {str(e)}'}), 500
+
+        # Guardar PDF
+        logger.debug("Guardando PDF")
+        try:
+            pdf.save()
+            buffer.seek(0)
+            logger.debug("PDF generado en buffer")
+        except Exception as e:
+            logger.error(f"Error al guardar PDF: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al guardar PDF: {str(e)}'}), 500
 
         # Generar nombre del archivo
+        logger.debug("Generando nombre del archivo PDF")
         bodegas_str = bodegas.replace(',', '_') if bodegas else 'todas'
         filename = f"kardex_{idcliente}_{codigo_producto}_{fecha_inicio}_{fecha_fin}_{bodegas_str}.pdf"
 
         logger.info(f"PDF generado exitosamente: {filename}")
-        return send_file(
-            buffer,
-            as_attachment=True,
-            download_name=filename,
-            mimetype="application/pdf"
-        )
+        logger.debug("Enviando archivo PDF")
+        try:
+            return send_file(
+                buffer,
+                as_attachment=True,
+                download_name=filename,
+                mimetype="application/pdf"
+            )
+        except Exception as e:
+            logger.error(f"Error al enviar archivo PDF: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al enviar PDF: {str(e)}'}), 500
 
     except Exception as e:
-        logger.error(f"Error al generar PDF del Kardex: {str(e)}", exc_info=True)
+        logger.error(f"Error general al generar PDF del Kardex: {str(e)}", exc_info=True)
         return jsonify({'error': f'Error al generar el PDF: {str(e)}'}), 500
     
 
