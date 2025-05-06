@@ -907,6 +907,9 @@ def clean_string(text):
     text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
     return text[:100]
 
+# Función para formatear moneda manualmente
+def format_currency(value):
+    return f"${value:,.2f}"
 
 
 # Enpooints para listar las clases de modelos registrados
@@ -6745,7 +6748,7 @@ def generar_kardex_pdf():
         except Exception as e:
             logger.warning(f"Fuente Helvetica no disponible: {str(e)}. Usando Times-Roman")
             pdf.setFont("Times-Roman", 10)
-        pdf.drawString(30, y, f"CPP Global: {'N/A' if cpp_global == 0 else locale.currency(cpp_global, grouping=True)}")
+        pdf.drawString(30, y, f"CPP Global: {'N/A' if cpp_global == 0 else format_currency(cpp_global)}")
         y -= 20
 
         try:
@@ -6768,8 +6771,8 @@ def generar_kardex_pdf():
         for r in resumen:
             pdf.drawString(30, y, r['almacen'])
             pdf.drawString(150, y, f"{locale.format_string('%.2f', r['stock_final'], grouping=True)}")
-            pdf.drawString(250, y, f"{locale.currency(r['valor_acumulado'], grouping=True)}")
-            pdf.drawString(350, y, f"{'N/A' if r['cpp'] == 0 else locale.currency(r['cpp'], grouping=True)}")
+            pdf.drawString(250, y, f"{format_currency(r['valor_acumulado'])}")
+            pdf.drawString(350, y, f"{'N/A' if r['cpp'] == 0 else format_currency(r['cpp'])}")
             y -= 15
 
         try:
@@ -6779,7 +6782,7 @@ def generar_kardex_pdf():
             pdf.setFont("Times-Roman", 9)
         pdf.drawString(30, y, "Total")
         pdf.drawString(150, y, f"{locale.format_string('%.2f', total_stock, grouping=True)}")
-        pdf.drawString(250, y, f"{'N/A' if total_valor == 0 else locale.currency(total_valor, grouping=True)}")
+        pdf.drawString(250, y, f"{'N/A' if total_valor == 0 else format_currency(total_valor)}")
         y -= 25
 
         # Tabla de movimientos
@@ -6852,7 +6855,7 @@ def generar_kardex_pdf():
                 y = 550
 
             cantidad = f"-{movimiento['cantidad']:.3f}" if movimiento['tipo'] == "SALIDA" else f"{movimiento['cantidad']:.3f}"
-            costo_total = f"-${movimiento['costo_total']:.2f}" if movimiento['tipo'] == "SALIDA" else f"${movimiento['costo_total']:.2f}"
+            costo_total = f"-{format_currency(movimiento['costo_total'])}" if movimiento['tipo'] == "SALIDA" else f"{format_currency(movimiento['costo_total'])}"
             descripcion = movimiento['descripcion'] or "N/A"
             descripcion_lines = simpleSplit(descripcion, "Helvetica", 7, ancho_descripcion)
 
@@ -6860,12 +6863,12 @@ def generar_kardex_pdf():
             pdf.drawString(30 + ancho_fecha, y, movimiento['tipo'])
             pdf.drawString(30 + ancho_fecha + ancho_documento, y, movimiento['bodega'] or "N/A")
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen, y, cantidad)
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad, y, f"${movimiento['costo_unitario']:.2f}")
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad, y, f"{format_currency(movimiento['costo_unitario'])}")
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo, y, costo_total)
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total, y, f"{movimiento['saldo']:.3f}")
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada, y, f"${movimiento['saldo_costo_total']:.2f}")
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado, y, f"${movimiento['saldo_costo_unitario']:.2f}")
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp, y, f"${movimiento['saldo_costo_unitario_global']:.2f}")
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada, y, f"{format_currency(movimiento['saldo_costo_total'])}")
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado, y, f"{format_currency(movimiento['saldo_costo_unitario'])}")
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp, y, f"{format_currency(movimiento['saldo_costo_unitario_global'])}")
 
             for i, line in enumerate(descripcion_lines):
                 if i == 0:
