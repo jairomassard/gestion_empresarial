@@ -56,6 +56,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Forzar flush de logs
+logger.handlers[0].flush = sys.stderr.flush
+
 # Configurar una clave secreta para la sesión (necesaria para que funcione)
 app.secret_key = app.config['SECRET_KEY']  # Usamos la clave del .env se usa para las sesiones
 app.config['JWT_SECRET_KEY'] = app.config['SECRET_KEY']  # Para JWT
@@ -6378,22 +6381,36 @@ def generar_kardex_pdf():
 
         # Verificar permisos
         logger.debug("Verificando permisos del usuario")
-        claims = get_jwt()
-        logger.debug(f"Claims recibidos: {claims}")
+        try:
+            claims = get_jwt()
+            logger.debug(f"Claims recibidos: {claims}")
+        except Exception as e:
+            logger.error(f"Error al obtener claims del JWT: {str(e)}", exc_info=True)
+            return jsonify({'error': 'Error al procesar el token de autenticación'}), 500
+
         if not has_permission(claims, 'inventario', 'kardex', 'ver'):
             logger.error("Usuario sin permiso para generar PDF del Kardex")
             return jsonify({'error': 'No tienes permiso para generar el PDF del Kardex'}), 403
 
         # Obtener parámetros
         logger.debug("Obteniendo parámetros de la solicitud")
-        codigo_producto = request.args.get('codigo')
-        fecha_inicio = request.args.get('fecha_inicio')
-        fecha_fin = request.args.get('fecha_fin')
-        bodegas = request.args.get('bodegas')
-        idcliente = claims.get('idcliente')
+        try:
+            codigo_producto = request.args.get('codigo')
+            logger.debug(f"Código producto recibido: {codigo_producto}")
+            fecha_inicio = request.args.get('fecha_inicio')
+            logger.debug(f"Fecha inicio recibida: {fecha_inicio}")
+            fecha_fin = request.args.get('fecha_fin')
+            logger.debug(f"Fecha fin recibida: {fecha_fin}")
+            bodegas = request.args.get('bodegas')
+            logger.debug(f"Bodegas recibidas: {bodegas}")
+            idcliente = claims.get('idcliente')
+            logger.debug(f"ID cliente recibido: {idcliente}")
+        except Exception as e:
+            logger.error(f"Error al obtener parámetros de la solicitud: {str(e)}", exc_info=True)
+            return jsonify({'error': 'Error al procesar los parámetros de la solicitud'}), 500
 
         if not all([codigo_producto, fecha_inicio, fecha_fin, idcliente]):
-            logger.error("Faltan parámetros: codigo, fecha_inicio, fecha_fin, idcliente")
+            logger.error(f"Faltan parámetros: codigo={codigo_producto}, fecha_inicio={fecha_inicio}, fecha_fin={fecha_fin}, idcliente={idcliente}")
             return jsonify({'error': 'Faltan parámetros (código, fecha_inicio, fecha_fin, idcliente).'}), 400
 
         # Convertir fechas
@@ -6406,104 +6423,144 @@ def generar_kardex_pdf():
             logger.error(f"Formato de fecha inválido: {str(ve)}", exc_info=True)
             return jsonify({'error': 'Formato de fecha inválido. Use YYYY-MM-DD.'}), 400
 
+        # Verificar conexión a la base de datos
+        logger.debug("Verificando conexión a la base de datos")
+        try:
+            db.session.execute("SELECT 1")
+            logger.debug("Conexión a la base de datos exitosa")
+        except Exception as e:
+            logger.error(f"Error al conectar con la base de datos: {str(e)}", exc_info=True)
+            return jsonify({'error': 'Error de conexión con la base de datos'}), 500
+
         # Verificar cliente
         logger.debug(f"Buscando cliente con ID {idcliente}")
-        cliente = Clientes.query.filter_by(idcliente=idcliente).first()
-        if not cliente:
-            logger.error(f"Cliente con ID {idcliente} no encontrado")
-            return jsonify({'error': f'Cliente con ID {idcliente} no encontrado.'}), 404
+        try:
+            cliente = Clientes.query.filter_by(idcliente=idcliente).first()
+            if not cliente:
+                logger.error(f"Cliente con ID {idcliente} no encontrado")
+                return jsonify({'error': f'Cliente con ID {idcliente} no encontrado.'}), 404
+            logger.debug(f"Cliente encontrado: {cliente.nombre}")
+        except Exception as e:
+            logger.error(f"Error al buscar cliente con ID {idcliente}: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al buscar cliente: {str(e)}'}), 500
 
         # Verificar producto
         logger.debug(f"Buscando producto con código {codigo_producto}")
-        producto = Producto.query.filter_by(codigo=codigo_producto, idcliente=idcliente).first()
-        if not producto:
-            logger.error(f"Producto con código {codigo_producto} no encontrado")
-            return jsonify({'error': f'Producto con código {codigo_producto} no encontrado.'}), 404
+        try:
+            producto = Producto.query.filter_by(codigo=codigo_producto, idcliente=idcliente).first()
+            if not producto:
+                logger.error(f"Producto con código {codigo_producto} no encontrado")
+                return jsonify({'error': f'Producto con código {codigo_producto} no encontrado.'}), 404
+            logger.debug(f"Producto encontrado: {producto.nombre}")
+        except Exception as e:
+            logger.error(f"Error al buscar producto con código {codigo_producto}: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al buscar producto: {str(e)}'}), 500
 
         # Obtener bodegas
         logger.debug("Obteniendo bodegas")
         bodegas_ids = None
         if bodegas:
-            bodegas_list = bodegas.split(',')
-            bodegas_query = Bodega.query.filter(Bodega.nombre.in_(bodegas_list), Bodega.idcliente == idcliente).all()
-            bodegas_ids = [b.id for b in bodegas_query]
-            if not bodegas_ids:
-                logger.error(f"Ninguna bodega encontrada para {bodegas_list}")
-                return jsonify({'error': 'Ninguna de las bodegas especificadas fue encontrada.'}), 404
-            logger.debug(f"Bodegas IDs: {bodegas_ids}")
+            try:
+                bodegas_list = bodegas.split(',')
+                logger.debug(f"Bodegas solicitadas: {bodegas_list}")
+                bodegas_query = Bodega.query.filter(Bodega.nombre.in_(bodegas_list), Bodega.idcliente == idcliente).all()
+                bodegas_ids = [b.id for b in bodegas_query]
+                if not bodegas_ids:
+                    logger.error(f"Ninguna bodega encontrada para {bodegas_list}")
+                    return jsonify({'error': 'Ninguna de las bodegas especificadas fue encontrada.'}), 404
+                logger.debug(f"Bodegas IDs: {bodegas_ids}")
+            except Exception as e:
+                logger.error(f"Error al obtener bodegas: {str(e)}", exc_info=True)
+                return jsonify({'error': f'Error al procesar bodegas: {str(e)}'}), 500
 
         # Calcular saldo inicial
         logger.debug("Calculando saldos iniciales")
         saldo_bodegas = {}
         saldo_costo_total_bodegas = {}
-        kardex_interno_query = Kardex.query.filter(
-            Kardex.producto_id == producto.id,
-            Kardex.idcliente == idcliente,
-            Kardex.fecha < fecha_inicio_dt
-        )
-        if bodegas_ids:
-            kardex_interno_query = kardex_interno_query.filter(
-                (Kardex.bodega_origen_id.in_(bodegas_ids)) | (Kardex.bodega_destino_id.in_(bodegas_ids))
+        try:
+            kardex_interno_query = Kardex.query.filter(
+                Kardex.producto_id == producto.id,
+                Kardex.idcliente == idcliente,
+                Kardex.fecha < fecha_inicio_dt
             )
-        kardex_interno = kardex_interno_query.order_by(Kardex.fecha).all()
-        logger.debug(f"Movimientos iniciales encontrados: {len(kardex_interno)}")
+            if bodegas_ids:
+                kardex_interno_query = kardex_interno_query.filter(
+                    (Kardex.bodega_origen_id.in_(bodegas_ids)) | (Kardex.bodega_destino_id.in_(bodegas_ids))
+                )
+            kardex_interno = kardex_interno_query.order_by(Kardex.fecha).all()
+            logger.debug(f"Movimientos iniciales encontrados: {len(kardex_interno)}")
+        except Exception as e:
+            logger.error(f"Error al consultar movimientos iniciales: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al consultar movimientos iniciales: {str(e)}'}), 500
 
         for movimiento in kardex_interno:
-            cantidad = float(movimiento.cantidad or 0)
-            costo_total = float(movimiento.costo_total or 0)
-            logger.debug(f"Procesando movimiento inicial: {movimiento.tipo_movimiento}, cantidad={cantidad}, costo_total={costo_total}")
-            if movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
-                saldo_bodegas[movimiento.bodega_origen_id] = saldo_bodegas.get(movimiento.bodega_origen_id, 0) - cantidad
-                saldo_costo_total_bodegas[movimiento.bodega_origen_id] = saldo_costo_total_bodegas.get(movimiento.bodega_origen_id, 0) - costo_total
-            elif movimiento.tipo_movimiento == 'ENTRADA' and movimiento.bodega_destino_id:
-                saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + cantidad
-                saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + costo_total
-            elif movimiento.tipo_movimiento == 'TRASLADO':
-                if movimiento.bodega_origen_id:
+            try:
+                cantidad = float(movimiento.cantidad or 0)
+                costo_total = float(movimiento.costo_total or 0)
+                logger.debug(f"Procesando movimiento inicial: {movimiento.tipo_movimiento}, cantidad={cantidad}, costo_total={costo_total}")
+                if movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
                     saldo_bodegas[movimiento.bodega_origen_id] = saldo_bodegas.get(movimiento.bodega_origen_id, 0) - cantidad
                     saldo_costo_total_bodegas[movimiento.bodega_origen_id] = saldo_costo_total_bodegas.get(movimiento.bodega_origen_id, 0) - costo_total
-                if movimiento.bodega_destino_id:
+                elif movimiento.tipo_movimiento == 'ENTRADA' and movimiento.bodega_destino_id:
                     saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + cantidad
                     saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + costo_total
+                elif movimiento.tipo_movimiento == 'TRASLADO':
+                    if movimiento.bodega_origen_id:
+                        saldo_bodegas[movimiento.bodega_origen_id] = saldo_bodegas.get(movimiento.bodega_origen_id, 0) - cantidad
+                        saldo_costo_total_bodegas[movimiento.bodega_origen_id] = saldo_costo_total_bodegas.get(movimiento.bodega_origen_id, 0) - costo_total
+                    if movimiento.bodega_destino_id:
+                        saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + cantidad
+                        saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + costo_total
+            except Exception as e:
+                logger.error(f"Error al procesar movimiento inicial: {str(e)}", exc_info=True)
+                return jsonify({'error': f'Error al procesar movimiento inicial: {str(e)}'}), 500
 
         # Preparar saldos iniciales
         logger.debug("Preparando saldos iniciales por bodega")
         saldo_bodegas_nombres = {}
         total_saldo_global = 0
         total_costo_global = 0
-        for bodega_id, saldo in saldo_bodegas.items():
-            if saldo <= 0:
-                continue
-            bodega = Bodega.query.filter_by(id=bodega_id).first()
-            if bodega:
-                costo_total = saldo_costo_total_bodegas.get(bodega_id, 0)
-                costo_unitario = costo_total / saldo if saldo > 0 else 0.0
-                saldo_bodegas_nombres[bodega.nombre] = {
-                    'cantidad': float(saldo),
-                    'costo_total': float(costo_total),
-                    'costo_unitario': float(costo_unitario)
-                }
-                total_saldo_global += saldo
-                total_costo_global += costo_total
-        logger.debug(f"Saldos iniciales: {saldo_bodegas_nombres}")
+        try:
+            for bodega_id, saldo in saldo_bodegas.items():
+                if saldo <= 0:
+                    continue
+                bodega = Bodega.query.filter_by(id=bodega_id).first()
+                if bodega:
+                    costo_total = saldo_costo_total_bodegas.get(bodega_id, 0)
+                    costo_unitario = costo_total / saldo if saldo > 0 else 0.0
+                    saldo_bodegas_nombres[bodega.nombre] = {
+                        'cantidad': float(saldo),
+                        'costo_total': float(costo_total),
+                        'costo_unitario': float(costo_unitario)
+                    }
+                    total_saldo_global += saldo
+                    total_costo_global += costo_total
+            logger.debug(f"Saldos iniciales: {saldo_bodegas_nombres}")
+        except Exception as e:
+            logger.error(f"Error al preparar saldos iniciales: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al preparar saldos iniciales: {str(e)}'}), 500
 
         saldo_costo_unitario_global = total_costo_global / total_saldo_global if total_saldo_global > 0 else 0.0
         logger.debug(f"Saldo costo unitario global: {saldo_costo_unitario_global}")
 
         # Consultar movimientos
         logger.debug("Consultando movimientos en el rango de fechas")
-        movimientos_query = Kardex.query.filter(
-            Kardex.producto_id == producto.id,
-            Kardex.idcliente == idcliente,
-            Kardex.fecha >= fecha_inicio_dt,
-            Kardex.fecha <= fecha_fin_dt
-        )
-        if bodegas_ids:
-            movimientos_query = movimientos_query.filter(
-                (Kardex.bodega_origen_id.in_(bodegas_ids)) | (Kardex.bodega_destino_id.in_(bodegas_ids))
+        try:
+            movimientos_query = Kardex.query.filter(
+                Kardex.producto_id == producto.id,
+                Kardex.idcliente == idcliente,
+                Kardex.fecha >= fecha_inicio_dt,
+                Kardex.fecha <= fecha_fin_dt
             )
-        movimientos = movimientos_query.order_by(Kardex.fecha).all()
-        logger.debug(f"Movimientos en rango: {len(movimientos)}")
+            if bodegas_ids:
+                movimientos_query = movimientos_query.filter(
+                    (Kardex.bodega_origen_id.in_(bodegas_ids)) | (Kardex.bodega_destino_id.in_(bodegas_ids))
+                )
+            movimientos = movimientos_query.order_by(Kardex.fecha).all()
+            logger.debug(f"Movimientos en rango: {len(movimientos)}")
+        except Exception as e:
+            logger.error(f"Error al consultar movimientos: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al consultar movimientos: {str(e)}'}), 500
 
         kardex = []
         saldo_actual = saldo_bodegas.copy()
@@ -6511,153 +6568,161 @@ def generar_kardex_pdf():
         total_saldo_global_actual = total_saldo_global
         total_costo_global_actual = total_costo_global
 
-        # Registrar saldos iniciales
+        # Registrar saldo inicial
         logger.debug("Registrando saldos iniciales en kardex")
-        for bodega_nombre, saldos in saldo_bodegas_nombres.items():
-            kardex.append({
-                'fecha': fecha_inicio_dt.strftime('%Y-%m-%d 00:00:00'),
-                'tipo': 'SALDO INICIAL',
-                'cantidad': saldos['cantidad'],
-                'bodega': bodega_nombre,
-                'saldo': saldos['cantidad'],
-                'costo_unitario': saldos['costo_unitario'],
-                'costo_total': saldos['costo_total'],
-                'saldo_costo_unitario': saldos['costo_unitario'],
-                'saldo_costo_total': saldos['costo_total'],
-                'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                'descripcion': 'Saldo inicial antes del rango de consulta'
-            })
+        try:
+            for bodega_nombre, saldos in saldo_bodegas_nombres.items():
+                kardex.append({
+                    'fecha': fecha_inicio_dt.strftime('%Y-%m-%d 00:00:00'),
+                    'tipo': 'SALDO INICIAL',
+                    'cantidad': saldos['cantidad'],
+                    'bodega': bodega_nombre,
+                    'saldo': saldos['cantidad'],
+                    'costo_unitario': saldos['costo_unitario'],
+                    'costo_total': saldos['costo_total'],
+                    'saldo_costo_unitario': saldos['costo_unitario'],
+                    'saldo_costo_total': saldos['costo_total'],
+                    'saldo_costo_unitario_global': saldo_costo_unitario_global,
+                    'descripcion': 'Saldo inicial antes del rango de consulta'
+                })
+        except Exception as e:
+            logger.error(f"Error al registrar saldos iniciales: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al registrar saldos iniciales: {str(e)}'}), 500
 
         # Procesar movimientos
         logger.debug("Procesando movimientos")
         for movimiento in movimientos:
             logger.debug(f"Procesando movimiento: {movimiento.tipo_movimiento}, fecha={movimiento.fecha}")
-            if movimiento.tipo_movimiento == 'ENTRADA' and movimiento.bodega_destino_id:
-                bodega = movimiento.bodega_destino.nombre if movimiento.bodega_destino else 'N/A'
-                saldo_antes = saldo_actual.get(movimiento.bodega_destino_id, 0)
-                costo_total_antes = saldo_costo_total_actual.get(movimiento.bodega_destino_id, 0)
+            try:
+                if movimiento.tipo_movimiento == 'ENTRADA' and movimiento.bodega_destino_id:
+                    bodega = movimiento.bodega_destino.nombre if movimiento.bodega_destino else 'N/A'
+                    saldo_antes = saldo_actual.get(movimiento.bodega_destino_id, 0)
+                    costo_total_antes = saldo_costo_total_actual.get(movimiento.bodega_destino_id, 0)
 
-                cantidad = float(movimiento.cantidad or 0)
-                costo_unitario = float(movimiento.costo_unitario or 0.0)
-                costo_total_movimiento = float(movimiento.costo_total or (cantidad * costo_unitario))
+                    cantidad = float(movimiento.cantidad or 0)
+                    costo_unitario = float(movimiento.costo_unitario or 0.0)
+                    costo_total_movimiento = float(movimiento.costo_total or (cantidad * costo_unitario))
 
-                saldo_actual[movimiento.bodega_destino_id] = saldo_antes + cantidad
-                saldo_costo_total_actual[movimiento.bodega_destino_id] = costo_total_antes + costo_total_movimiento
-                total_saldo_global_actual += cantidad
-                total_costo_global_actual += costo_total_movimiento
+                    saldo_actual[movimiento.bodega_destino_id] = saldo_antes + cantidad
+                    saldo_costo_total_actual[movimiento.bodega_destino_id] = costo_total_antes + costo_total_movimiento
+                    total_saldo_global_actual += cantidad
+                    total_costo_global_actual += costo_total_movimiento
 
-                saldo_costo_unitario_bodega = (
-                    saldo_costo_total_actual[movimiento.bodega_destino_id] / saldo_actual[movimiento.bodega_destino_id]
-                    if saldo_actual[movimiento.bodega_destino_id] > 0 else 0.0
-                )
-                saldo_costo_unitario_global = (
-                    total_costo_global_actual / total_saldo_global_actual if total_saldo_global_actual > 0 else 0.0
-                )
+                    saldo_costo_unitario_bodega = (
+                        saldo_costo_total_actual[movimiento.bodega_destino_id] / saldo_actual[movimiento.bodega_destino_id]
+                        if saldo_actual[movimiento.bodega_destino_id] > 0 else 0.0
+                    )
+                    saldo_costo_unitario_global = (
+                        total_costo_global_actual / total_saldo_global_actual if total_saldo_global_actual > 0 else 0.0
+                    )
 
-                kardex.append({
-                    'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
-                    'tipo': 'ENTRADA',
-                    'cantidad': cantidad,
-                    'bodega': bodega,
-                    'saldo': float(saldo_actual[movimiento.bodega_destino_id]),
-                    'costo_unitario': costo_unitario,
-                    'costo_total': costo_total_movimiento,
-                    'saldo_costo_unitario': saldo_costo_unitario_bodega,
-                    'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
-                    'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': clean_string(movimiento.referencia or 'Entrada registrada')
-                })
+                    kardex.append({
+                        'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
+                        'tipo': 'ENTRADA',
+                        'cantidad': cantidad,
+                        'bodega': bodega,
+                        'saldo': float(saldo_actual[movimiento.bodega_destino_id]),
+                        'costo_unitario': costo_unitario,
+                        'costo_total': costo_total_movimiento,
+                        'saldo_costo_unitario': saldo_costo_unitario_bodega,
+                        'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
+                        'saldo_costo_unitario_global': saldo_costo_unitario_global,
+                        'descripcion': clean_string(movimiento.referencia or 'Entrada registrada')
+                    })
 
-            elif movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
-                bodega = movimiento.bodega_origen.nombre if movimiento.bodega_origen else 'N/A'
-                saldo_antes = saldo_actual.get(movimiento.bodega_origen_id, 0)
-                costo_total_antes = saldo_costo_total_actual.get(movimiento.bodega_origen_id, 0)
-                costo_unitario_antes = costo_total_antes / saldo_antes if saldo_antes > 0 else 0.0
+                elif movimiento.tipo_movimiento == 'SALIDA' and movimiento.bodega_origen_id:
+                    bodega = movimiento.bodega_origen.nombre if movimiento.bodega_origen else 'N/A'
+                    saldo_antes = saldo_actual.get(movimiento.bodega_origen_id, 0)
+                    costo_total_antes = saldo_costo_total_actual.get(movimiento.bodega_origen_id, 0)
+                    costo_unitario_antes = costo_total_antes / saldo_antes if saldo_antes > 0 else 0.0
 
-                cantidad = float(movimiento.cantidad or 0)
-                costo_unitario = float(movimiento.costo_unitario or costo_unitario_antes)
-                costo_total_movimiento = float(movimiento.costo_total or (cantidad * costo_unitario))
+                    cantidad = float(movimiento.cantidad or 0)
+                    costo_unitario = float(movimiento.costo_unitario or costo_unitario_antes)
+                    costo_total_movimiento = float(movimiento.costo_total or (cantidad * costo_unitario))
 
-                saldo_actual[movimiento.bodega_origen_id] = saldo_antes - cantidad
-                saldo_costo_total_actual[movimiento.bodega_origen_id] = costo_total_antes - costo_total_movimiento
-                total_saldo_global_actual -= cantidad
-                total_costo_global_actual -= costo_total_movimiento
+                    saldo_actual[movimiento.bodega_origen_id] = saldo_antes - cantidad
+                    saldo_costo_total_actual[movimiento.bodega_origen_id] = costo_total_antes - costo_total_movimiento
+                    total_saldo_global_actual -= cantidad
+                    total_costo_global_actual -= costo_total_movimiento
 
-                saldo_costo_unitario_bodega = (
-                    saldo_costo_total_actual[movimiento.bodega_origen_id] / saldo_actual[movimiento.bodega_origen_id]
-                    if saldo_actual[movimiento.bodega_origen_id] > 0 else 0.0
-                )
-                saldo_costo_unitario_global = (
-                    total_costo_global_actual / total_saldo_global_actual if total_saldo_global_actual > 0 else 0.0
-                )
+                    saldo_costo_unitario_bodega = (
+                        saldo_costo_total_actual[movimiento.bodega_origen_id] / saldo_actual[movimiento.bodega_origen_id]
+                        if saldo_actual[movimiento.bodega_origen_id] > 0 else 0.0
+                    )
+                    saldo_costo_unitario_global = (
+                        total_costo_global_actual / total_saldo_global_actual if total_saldo_global_actual > 0 else 0.0
+                    )
 
-                kardex.append({
-                    'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
-                    'tipo': 'SALIDA',
-                    'cantidad': cantidad,
-                    'bodega': bodega,
-                    'saldo': float(saldo_actual[movimiento.bodega_origen_id]),
-                    'costo_unitario': costo_unitario,
-                    'costo_total': costo_total_movimiento,
-                    'saldo_costo_unitario': saldo_costo_unitario_bodega,
-                    'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
-                    'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': clean_string(movimiento.referencia or 'Salida registrada')
-                })
+                    kardex.append({
+                        'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
+                        'tipo': 'SALIDA',
+                        'cantidad': cantidad,
+                        'bodega': bodega,
+                        'saldo': float(saldo_actual[movimiento.bodega_origen_id]),
+                        'costo_unitario': costo_unitario,
+                        'costo_total': costo_total_movimiento,
+                        'saldo_costo_unitario': saldo_costo_unitario_bodega,
+                        'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
+                        'saldo_costo_unitario_global': saldo_costo_unitario_global,
+                        'descripcion': clean_string(movimiento.referencia or 'Salida registrada')
+                    })
 
-            elif movimiento.tipo_movimiento == 'TRASLADO' and movimiento.bodega_origen_id and movimiento.bodega_destino_id:
-                bodega_origen = movimiento.bodega_origen.nombre
-                saldo_origen_antes = saldo_actual.get(movimiento.bodega_origen_id, 0)
-                costo_total_origen_antes = saldo_costo_total_actual.get(movimiento.bodega_origen_id, 0)
-                costo_unitario_origen = costo_total_antes / saldo_origen_antes if saldo_origen_antes > 0 else 0.0
-                cantidad = float(movimiento.cantidad or 0)
-                costo_total_traslado = cantidad * costo_unitario_origen
+                elif movimiento.tipo_movimiento == 'TRASLADO' and movimiento.bodega_origen_id and movimiento.bodega_destino_id:
+                    bodega_origen = movimiento.bodega_origen.nombre
+                    saldo_origen_antes = saldo_actual.get(movimiento.bodega_origen_id, 0)
+                    costo_total_origen_antes = saldo_costo_total_actual.get(movimiento.bodega_origen_id, 0)
+                    costo_unitario_origen = costo_total_antes / saldo_origen_antes if saldo_origen_antes > 0 else 0.0
+                    cantidad = float(movimiento.cantidad or 0)
+                    costo_total_traslado = cantidad * costo_unitario_origen
 
-                saldo_actual[movimiento.bodega_origen_id] = saldo_origen_antes - cantidad
-                saldo_costo_total_actual[movimiento.bodega_origen_id] = costo_total_origen_antes - costo_total_traslado
-                saldo_costo_unitario_origen = (
-                    saldo_costo_total_actual[movimiento.bodega_origen_id] / saldo_actual[movimiento.bodega_origen_id]
-                    if saldo_actual[movimiento.bodega_origen_id] > 0 else 0.0
-                )
+                    saldo_actual[movimiento.bodega_origen_id] = saldo_origen_antes - cantidad
+                    saldo_costo_total_actual[movimiento.bodega_origen_id] = costo_total_origen_antes - costo_total_traslado
+                    saldo_costo_unitario_origen = (
+                        saldo_costo_total_actual[movimiento.bodega_origen_id] / saldo_actual[movimiento.bodega_origen_id]
+                        if saldo_actual[movimiento.bodega_origen_id] > 0 else 0.0
+                    )
 
-                kardex.append({
-                    'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
-                    'tipo': 'SALIDA',
-                    'cantidad': cantidad,
-                    'bodega': bodega_origen,
-                    'saldo': float(saldo_actual[movimiento.bodega_origen_id]),
-                    'costo_unitario': costo_unitario_origen,
-                    'costo_total': costo_total_traslado,
-                    'saldo_costo_unitario': saldo_costo_unitario_origen,
-                    'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
-                    'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': clean_string(f'Traslado a {movimiento.bodega_destino.nombre}. Ref: {movimiento.referencia or "N/A"}')
-                })
+                    kardex.append({
+                        'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
+                        'tipo': 'SALIDA',
+                        'cantidad': cantidad,
+                        'bodega': bodega_origen,
+                        'saldo': float(saldo_actual[movimiento.bodega_origen_id]),
+                        'costo_unitario': costo_unitario_origen,
+                        'costo_total': costo_total_traslado,
+                        'saldo_costo_unitario': saldo_costo_unitario_origen,
+                        'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
+                        'saldo_costo_unitario_global': saldo_costo_unitario_global,
+                        'descripcion': clean_string(f'Traslado a {movimiento.bodega_destino.nombre}. Ref: {movimiento.referencia or "N/A"}')
+                    })
 
-                bodega_destino = movimiento.bodega_destino.nombre
-                saldo_destino_antes = saldo_actual.get(movimiento.bodega_destino_id, 0)
-                costo_total_destino_antes = saldo_costo_total_actual.get(movimiento.bodega_destino_id, 0)
+                    bodega_destino = movimiento.bodega_destino.nombre
+                    saldo_destino_antes = saldo_actual.get(movimiento.bodega_destino_id, 0)
+                    costo_total_destino_antes = saldo_costo_total_actual.get(movimiento.bodega_destino_id, 0)
 
-                saldo_actual[movimiento.bodega_destino_id] = saldo_destino_antes + cantidad
-                saldo_costo_total_actual[movimiento.bodega_destino_id] = costo_total_destino_antes + costo_total_traslado
-                saldo_costo_unitario_destino = (
-                    saldo_costo_total_actual[movimiento.bodega_destino_id] / saldo_actual[movimiento.bodega_destino_id]
-                    if saldo_actual[movimiento.bodega_destino_id] > 0 else 0.0
-                )
+                    saldo_actual[movimiento.bodega_destino_id] = saldo_destino_antes + cantidad
+                    saldo_costo_total_actual[movimiento.bodega_destino_id] = costo_total_destino_antes + costo_total_traslado
+                    saldo_costo_unitario_destino = (
+                        saldo_costo_total_actual[movimiento.bodega_destino_id] / saldo_actual[movimiento.bodega_destino_id]
+                        if saldo_actual[movimiento.bodega_destino_id] > 0 else 0.0
+                    )
 
-                kardex.append({
-                    'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
-                    'tipo': 'ENTRADA',
-                    'cantidad': cantidad,
-                    'bodega': bodega_destino,
-                    'saldo': float(saldo_actual[movimiento.bodega_destino_id]),
-                    'costo_unitario': costo_unitario_origen,
-                    'costo_total': costo_total_traslado,
-                    'saldo_costo_unitario': saldo_costo_unitario_destino,
-                    'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
-                    'saldo_costo_unitario_global': saldo_costo_unitario_global,
-                    'descripcion': clean_string(f'Traslado desde {bodega_origen}. Ref: {movimiento.referencia or "N/A"}')
-                })
+                    kardex.append({
+                        'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
+                        'tipo': 'ENTRADA',
+                        'cantidad': cantidad,
+                        'bodega': bodega_destino,
+                        'saldo': float(saldo_actual[movimiento.bodega_destino_id]),
+                        'costo_unitario': costo_unitario_origen,
+                        'costo_total': costo_total_traslado,
+                        'saldo_costo_unitario': saldo_costo_unitario_destino,
+                        'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
+                        'saldo_costo_unitario_global': saldo_costo_unitario_global,
+                        'descripcion': clean_string(f'Traslado desde {bodega_origen}. Ref: {movimiento.referencia or "N/A"}')
+                    })
+            except Exception as e:
+                logger.error(f"Error al procesar movimiento: {str(e)}", exc_info=True)
+                return jsonify({'error': f'Error al procesar movimiento: {str(e)}'}), 500
 
         if not kardex:
             bodegas_str = bodegas if bodegas else "todas las bodegas"
@@ -6840,9 +6905,9 @@ def generar_kardex_pdf():
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo, y, clean_string("Costo Total"))
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total, y, clean_string("Cant. Acum."))
             pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada, y, clean_string("Valor Acum."))
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado, y, clean_string("CPP"))
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp, y, clean_string("CPP Global"))
-            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulado + ancho_cpp + ancho_cpp_global, y, clean_string("Descripción"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulada, y, clean_string("CPP"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulada + ancho_cpp, y, clean_string("CPP Global"))
+            pdf.drawString(30 + ancho_fecha + ancho_documento + ancho_almacen + ancho_cantidad + ancho_costo + ancho_costo_total + ancho_cantidad_acumulada + ancho_valor_acumulada + ancho_cpp + ancho_cpp_global, y, clean_string("Descripción"))
             pdf.line(30, y - 5, 750, y - 5)
             y -= 15
             logger.debug("Encabezados de tabla dibujados")
@@ -6909,8 +6974,13 @@ def generar_kardex_pdf():
 
         # Generar nombre del archivo
         logger.debug("Generando nombre del archivo PDF")
-        bodegas_str = bodegas.replace(',', '_') if bodegas else 'todas'
-        filename = f"kardex_{idcliente}_{codigo_producto}_{fecha_inicio}_{fecha_fin}_{bodegas_str}.pdf"
+        try:
+            bodegas_str = bodegas.replace(',', '_') if bodegas else 'todas'
+            filename = f"kardex_{idcliente}_{codigo_producto}_{fecha_inicio}_{fecha_fin}_{bodegas_str}.pdf"
+            logger.debug(f"Nombre del archivo generado: {filename}")
+        except Exception as e:
+            logger.error(f"Error al generar nombre del archivo: {str(e)}", exc_info=True)
+            return jsonify({'error': f'Error al generar nombre del archivo: {str(e)}'}), 500
 
         logger.info(f"PDF generado exitosamente: {filename}")
         logger.debug("Enviando archivo PDF")
