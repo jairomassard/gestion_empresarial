@@ -908,11 +908,15 @@ def clean_string(text):
     return text[:100]
 
 # Función para formatear moneda manualmente
+#def format_currency(value):
+#    return f"${value:,.2f}"
+
+# Función para formatear moneda manualmente
+#Si necesitas específicamente el símbolo COP o un formato diferente (por ejemplo, $1.234,56 con coma decimal), podemos ajustar format_currency
 def format_currency(value):
-    return f"${value:,.2f}"
+   return f"$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-
-# Enpooints para listar las clases de modelos registrados
+# Enpoints para listar las clases de modelos registrados
 # Ruta para servir el frontend (index.html)
 @app.route('/')
 def serve_frontend():
