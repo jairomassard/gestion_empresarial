@@ -35,6 +35,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from decimal import Decimal
 import locale
 import unicodedata, os
+import sys
 
 
 # Crear la aplicación Flask
