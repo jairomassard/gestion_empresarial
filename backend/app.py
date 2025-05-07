@@ -10223,10 +10223,10 @@ def get_product_profit():
                 Producto.idcliente == id_cliente
             ).first()
             if producto:
-                producto_mapping[desc] = producto.id
+                producto_mapping[desc] = {'id': producto.id, 'es_compuesto': producto.es_producto_compuesto}
             else:
                 logger.warning(f"Producto {desc} no encontrado en tabla Producto")
-                producto_mapping[desc] = None
+                producto_mapping[desc] = {'id': None, 'es_compuesto': False}
 
         # Obtener ID de Planta Principal para excluirla
         planta_principal = Bodega.query.filter(
@@ -10239,7 +10239,9 @@ def get_product_profit():
         # Calcular costos y utilidad
         result = []
         for desc, data in sales_by_product.items():
-            producto_id = producto_mapping.get(desc)
+            producto_info = producto_mapping.get(desc)
+            producto_id = producto_info['id']
+            es_compuesto = producto_info['es_compuesto']
             costo_total = 0.0
             costo_produccion = 0.0
             cantidad_vendida = data['cantidad_vendida']
@@ -10259,8 +10261,8 @@ def get_product_profit():
                     else:
                         logger.warning(f"Bodega {almacen} no encontrada o es Planta Principal para producto {desc}")
 
-                if bodegas_ids:
-                    # Costos desde kardex
+                # Costos para productos no compuestos (desde kardex)
+                if not es_compuesto and bodegas_ids:
                     kardex_query = """
                         SELECT SUM(k.costo_total) as costo_total, SUM(k.cantidad) as cantidad
                         FROM kardex k
@@ -10281,7 +10283,6 @@ def get_product_profit():
                             f"Discrepancia en cantidades para {desc}: "
                             f"vendido={cantidad_vendida}, kardex={cantidad_kardex}"
                         )
-                        # Ajustar costo proporcionalmente
                         if cantidad_kardex > 0:
                             costo_unitario = costo_total / cantidad_kardex
                             costo_total = costo_unitario * cantidad_vendida
@@ -10292,9 +10293,8 @@ def get_product_profit():
                             f"Costo total {costo_total} excede ventas {venta} para {desc}"
                         )
 
-                # Costos de producción desde ordenes_produccion
-                producto = Producto.query.filter_by(id=producto_id, idcliente=id_cliente).first()
-                if producto and producto.es_producto_compuesto:
+                # Costos de producción para productos compuestos
+                if es_compuesto:
                     prod_query = """
                         SELECT SUM(op.costo_total) as costo_total, SUM(op.cantidad_paquetes) as cantidad
                         FROM ordenes_produccion op
