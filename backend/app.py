@@ -10153,8 +10153,8 @@ def get_product_profit():
         logger.debug(f"Cliente encontrado: id_cliente={id_cliente}")
 
         # Parámetros
-        year = request.args.get('year', type=int, default=datetime.now().year)
-        month = request.args.get('month', type=int, default=datetime.now().month)
+        year = request.args.get('year', type=int, default=2025)
+        month = request.args.get('month', type=int, default=5)
         product_desc = request.args.get('product_desc', type=str)
         status = request.args.get('status', default='Activo', type=str)
         pdv = request.args.get('pdv', type=str)
@@ -10174,7 +10174,7 @@ def get_product_profit():
         all_pdvs = [row[0] for row in pdv_data]
         logger.debug(f"PDVs obtenidos: {all_pdvs}, Mapeo: {pdv_mapping}")
 
-        # Consultar ventas por producto con filtro por PDV
+        # Consultar ventas por producto con almacenes
         sales_query = """
             SELECT vh.descripcion as producto, vh.almacen, SUM(vh.uds) as cantidad_vendida, SUM(vh.importe) as venta
             FROM ventahistoricahora vh
@@ -10185,9 +10185,8 @@ def get_product_profit():
         query_params = [id_cliente, year, month]
 
         if product_desc:
-            sales_query += " AND vh.descripcion ILIKE %s"
-            query_params.append(f'%{product_desc}%')
-
+            sales_query += " AND vh.descripcion = %s"
+            query_params.append(product_desc)
         if pdv and pdv != 'Todos':
             short_name = pdv_mapping.get(pdv, pdv)
             sales_query += " AND vh.almacen = %s"
@@ -10204,34 +10203,38 @@ def get_product_profit():
         sales_data = cursor.fetchall()
         logger.debug(f"Datos de ventas: {len(sales_data)} registros")
 
-        # Mapear descripciones a producto_id
-        producto_mapping = {}
+        # Estructurar datos de ventas
         sales_by_product = {}
         for desc, almacen, cantidad_vendida, venta in sales_data:
-            desc_normalized = desc.strip().lower()
+            if desc not in sales_by_product:
+                sales_by_product[desc] = {'cantidad_vendida': 0.0, 'venta': 0.0, 'almacenes': {}}
+            sales_by_product[desc]['cantidad_vendida'] += float(cantidad_vendida)
+            sales_by_product[desc]['venta'] += float(venta)
+            sales_by_product[desc]['almacenes'][almacen] = {
+                'cantidad_vendida': float(cantidad_vendida),
+                'venta': float(venta)
+            }
+
+        # Mapear descripciones a producto_id
+        producto_mapping = {}
+        for desc in sales_by_product:
             producto = Producto.query.filter(
-                Producto.nombre.ilike(f'%{desc_normalized}%'),
+                Producto.nombre == desc,  # Coincidencia exacta
                 Producto.idcliente == id_cliente
             ).first()
             if producto:
                 producto_mapping[desc] = producto.id
-                if desc not in sales_by_product:
-                    sales_by_product[desc] = {'cantidad_vendida': 0.0, 'venta': 0.0, 'almacenes': {}}
-                sales_by_product[desc]['cantidad_vendida'] += float(cantidad_vendida)
-                sales_by_product[desc]['venta'] += float(venta)
-                sales_by_product[desc]['almacenes'][almacen] = {
-                    'cantidad_vendida': float(cantidad_vendida),
-                    'venta': float(venta)
-                }
             else:
                 logger.warning(f"Producto {desc} no encontrado en tabla Producto")
                 producto_mapping[desc] = None
-                sales_by_product[desc] = {
-                    'cantidad_vendida': float(cantidad_vendida),
-                    'venta': float(venta),
-                    'almacenes': {almacen: {'cantidad_vendida': float(cantidad_vendida), 'venta': float(venta)}}
-                }
-        logger.debug(f"Productos mapeados: {len(producto_mapping)}")
+
+        # Obtener ID de Planta Principal para excluirla
+        planta_principal = Bodega.query.filter(
+            Bodega.nombre == 'Planta Principal',
+            Bodega.idcliente == id_cliente
+        ).first()
+        planta_principal_id = planta_principal.id if planta_principal else None
+        logger.debug(f"Planta Principal ID: {planta_principal_id}")
 
         # Calcular costos y utilidad
         result = []
@@ -10244,17 +10247,17 @@ def get_product_profit():
             almacenes = data['almacenes']
 
             if producto_id:
-                # Obtener bodegas correspondientes a los almacenes
+                # Obtener bodegas correspondientes a los almacenes, excluyendo Planta Principal
                 bodegas_ids = []
                 for almacen in almacenes:
                     bodega = Bodega.query.filter(
                         Bodega.nombre == almacen,
                         Bodega.idcliente == id_cliente
                     ).first()
-                    if bodega:
+                    if bodega and (not planta_principal_id or bodega.id != planta_principal_id):
                         bodegas_ids.append(bodega.id)
                     else:
-                        logger.warning(f"Bodega {almacen} no encontrada para producto {desc}")
+                        logger.warning(f"Bodega {almacen} no encontrada o es Planta Principal para producto {desc}")
 
                 if bodegas_ids:
                     # Costos desde kardex
@@ -10278,6 +10281,12 @@ def get_product_profit():
                             f"Discrepancia en cantidades para {desc}: "
                             f"vendido={cantidad_vendida}, kardex={cantidad_kardex}"
                         )
+                        # Ajustar costo proporcionalmente
+                        if cantidad_kardex > 0:
+                            costo_unitario = costo_total / cantidad_kardex
+                            costo_total = costo_unitario * cantidad_vendida
+                        else:
+                            costo_total = 0.0
                     if costo_total > venta:
                         logger.warning(
                             f"Costo total {costo_total} excede ventas {venta} para {desc}"
@@ -10303,6 +10312,10 @@ def get_product_profit():
                     if cantidad_produccion > 0:
                         costo_unitario_prod = costo_total_prod / cantidad_produccion
                         costo_produccion = costo_unitario_prod * cantidad_vendida
+                        logger.debug(
+                            f"Producto {desc}: costo_unitario_prod={costo_unitario_prod}, "
+                            f"costo_produccion={costo_produccion}, cantidad_vendida={cantidad_vendida}"
+                        )
                     else:
                         logger.warning(f"No se encontraron órdenes de producción finalizadas para {desc} en {year}-{month}")
 
