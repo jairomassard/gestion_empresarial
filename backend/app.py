@@ -10156,11 +10156,27 @@ def get_product_profit():
         year = request.args.get('year', type=int, default=datetime.now().year)
         month = request.args.get('month', type=int, default=datetime.now().month)
         product_desc = request.args.get('product_desc', type=str)
-        logger.debug(f"Parámetros: year={year}, month={month}, product_desc={product_desc}")
+        status = request.args.get('status', default='Activo', type=str)
+        pdv = request.args.get('pdv', type=str)
+        logger.debug(f"Parámetros: year={year}, month={month}, product_desc={product_desc}, status={status}, pdv={pdv}")
 
-        # Consultar ventas por producto
+        # Obtener PDVs según estatus
+        pdv_query = "SELECT PDV, data2 FROM PuntosDeVenta WHERE IdCliente = %s"
+        params = [id_cliente]
+        if status != 'Todos':
+            pdv_query += " AND Estado = %s"
+            params.append(status)
+        cursor.execute(pdv_query, params)
+        pdv_data = cursor.fetchall()
+        pdv_mapping = {row[0]: row[1] for row in pdv_data}
+        pdv_mapping['ACA - Caja Portal'] = 'Portal del Prado'
+        pdv_mapping['AQA - Caja la Castellana'] = 'La Castellana'
+        all_pdvs = [row[0] for row in pdv_data]
+        logger.debug(f"PDVs obtenidos: {all_pdvs}, Mapeo: {pdv_mapping}")
+
+        # Consultar ventas por producto con filtro por PDV
         sales_query = """
-            SELECT vh.descripcion as producto, SUM(vh.uds) as cantidad_vendida, SUM(vh.importe) as venta
+            SELECT vh.descripcion as producto, vh.almacen, SUM(vh.uds) as cantidad_vendida, SUM(vh.importe) as venta
             FROM ventahistoricahora vh
             WHERE vh.idcliente = %s
             AND EXTRACT(YEAR FROM vh.fecha) = %s
@@ -10172,17 +10188,26 @@ def get_product_profit():
             sales_query += " AND vh.descripcion ILIKE %s"
             query_params.append(f'%{product_desc}%')
 
+        if pdv and pdv != 'Todos':
+            short_name = pdv_mapping.get(pdv, pdv)
+            sales_query += " AND vh.almacen = %s"
+            query_params.append(short_name)
+        elif status != 'Todos':
+            sales_query += " AND vh.almacen IN (SELECT data2 FROM PuntosDeVenta WHERE IdCliente = %s AND Estado = %s)"
+            query_params.extend([id_cliente, status])
+
         sales_query += """
-            GROUP BY vh.descripcion
+            GROUP BY vh.descripcion, vh.almacen
             ORDER BY vh.descripcion
         """
         cursor.execute(sales_query, query_params)
         sales_data = cursor.fetchall()
-        logger.debug(f"Datos de ventas: {len(sales_data)} productos")
+        logger.debug(f"Datos de ventas: {len(sales_data)} registros")
 
         # Mapear descripciones a producto_id
         producto_mapping = {}
-        for desc, _, _ in sales_data:
+        sales_by_product = {}
+        for desc, almacen, cantidad_vendida, venta in sales_data:
             desc_normalized = desc.strip().lower()
             producto = Producto.query.filter(
                 Producto.nombre.ilike(f'%{desc_normalized}%'),
@@ -10190,35 +10215,73 @@ def get_product_profit():
             ).first()
             if producto:
                 producto_mapping[desc] = producto.id
+                if desc not in sales_by_product:
+                    sales_by_product[desc] = {'cantidad_vendida': 0.0, 'venta': 0.0, 'almacenes': {}}
+                sales_by_product[desc]['cantidad_vendida'] += float(cantidad_vendida)
+                sales_by_product[desc]['venta'] += float(venta)
+                sales_by_product[desc]['almacenes'][almacen] = {
+                    'cantidad_vendida': float(cantidad_vendida),
+                    'venta': float(venta)
+                }
             else:
                 logger.warning(f"Producto {desc} no encontrado en tabla Producto")
                 producto_mapping[desc] = None
+                sales_by_product[desc] = {
+                    'cantidad_vendida': float(cantidad_vendida),
+                    'venta': float(venta),
+                    'almacenes': {almacen: {'cantidad_vendida': float(cantidad_vendida), 'venta': float(venta)}}
+                }
+        logger.debug(f"Productos mapeados: {len(producto_mapping)}")
 
         # Calcular costos y utilidad
         result = []
-        for desc, cantidad_vendida, venta in sales_data:
+        for desc, data in sales_by_product.items():
             producto_id = producto_mapping.get(desc)
             costo_total = 0.0
             costo_produccion = 0.0
+            cantidad_vendida = data['cantidad_vendida']
+            venta = data['venta']
+            almacenes = data['almacenes']
 
             if producto_id:
-                # Costos desde kardex
-                kardex_query = """
-                    SELECT SUM(k.costo_total) as costo_total, SUM(k.cantidad) as cantidad
-                    FROM kardex k
-                    WHERE k.producto_id = %s
-                    AND k.idcliente = %s
-                    AND k.tipo_movimiento = 'SALIDA'
-                    AND EXTRACT(YEAR FROM k.fecha) = %s
-                    AND EXTRACT(MONTH FROM k.fecha) = %s
-                """
-                cursor.execute(kardex_query, [producto_id, id_cliente, year, month])
-                kardex_result = cursor.fetchone()
-                costo_total = float(kardex_result[0] or 0.0)
-                cantidad_kardex = float(kardex_result[1] or 0.0)
+                # Obtener bodegas correspondientes a los almacenes
+                bodegas_ids = []
+                for almacen in almacenes:
+                    bodega = Bodega.query.filter(
+                        Bodega.nombre == almacen,
+                        Bodega.idcliente == id_cliente
+                    ).first()
+                    if bodega:
+                        bodegas_ids.append(bodega.id)
+                    else:
+                        logger.warning(f"Bodega {almacen} no encontrada para producto {desc}")
 
-                if cantidad_kardex == 0:
-                    logger.warning(f"No se encontraron movimientos de salida en kardex para {desc} en {year}-{month}")
+                if bodegas_ids:
+                    # Costos desde kardex
+                    kardex_query = """
+                        SELECT SUM(k.costo_total) as costo_total, SUM(k.cantidad) as cantidad
+                        FROM kardex k
+                        WHERE k.producto_id = %s
+                        AND k.idcliente = %s
+                        AND k.tipo_movimiento = 'SALIDA'
+                        AND k.bodega_origen_id IN %s
+                        AND EXTRACT(YEAR FROM k.fecha) = %s
+                        AND EXTRACT(MONTH FROM k.fecha) = %s
+                    """
+                    cursor.execute(kardex_query, [producto_id, id_cliente, tuple(bodegas_ids), year, month])
+                    kardex_result = cursor.fetchone()
+                    costo_total = float(kardex_result[0] or 0.0)
+                    cantidad_kardex = float(kardex_result[1] or 0.0)
+
+                    if abs(cantidad_kardex - cantidad_vendida) > 0.01:
+                        logger.warning(
+                            f"Discrepancia en cantidades para {desc}: "
+                            f"vendido={cantidad_vendida}, kardex={cantidad_kardex}"
+                        )
+                    if costo_total > venta:
+                        logger.warning(
+                            f"Costo total {costo_total} excede ventas {venta} para {desc}"
+                        )
 
                 # Costos de producción desde ordenes_produccion
                 producto = Producto.query.filter_by(id=producto_id, idcliente=id_cliente).first()
@@ -10234,19 +10297,22 @@ def get_product_profit():
                     """
                     cursor.execute(prod_query, [producto_id, id_cliente, year, month])
                     prod_result = cursor.fetchone()
-                    costo_produccion = float(prod_result[0] or 0.0)
+                    costo_total_prod = float(prod_result[0] or 0.0)
                     cantidad_produccion = float(prod_result[1] or 0.0)
 
-                    if cantidad_produccion == 0:
+                    if cantidad_produccion > 0:
+                        costo_unitario_prod = costo_total_prod / cantidad_produccion
+                        costo_produccion = costo_unitario_prod * cantidad_vendida
+                    else:
                         logger.warning(f"No se encontraron órdenes de producción finalizadas para {desc} en {year}-{month}")
 
-            utilidad = float(venta) - costo_total - costo_produccion
-            margen = (utilidad / float(venta) * 100) if float(venta) > 0 else 0.0
+            utilidad = venta - costo_total - costo_produccion
+            margen = (utilidad / venta * 100) if venta > 0 else 0.0
 
             result.append({
                 'descripcion': desc,
-                'cantidad_vendida': round(float(cantidad_vendida), 2),
-                'ventas': round(float(venta), 2),
+                'cantidad_vendida': round(cantidad_vendida, 2),
+                'ventas': round(venta, 2),
                 'costos': round(costo_total, 2),
                 'produccion': round(costo_produccion, 2),
                 'utilidad': round(utilidad, 2),
