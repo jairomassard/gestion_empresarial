@@ -10155,10 +10155,11 @@ def get_product_profit():
         # Parámetros
         year = request.args.get('year', type=int, default=2025)
         month = request.args.get('month', type=int, default=5)
+        day = request.args.get('day', type=int)  # Filtro opcional por día
         product_desc = request.args.get('product_desc', type=str)
         status = request.args.get('status', default='Activo', type=str)
         pdv = request.args.get('pdv', type=str)
-        logger.debug(f"Parámetros: year={year}, month={month}, product_desc={product_desc}, status={status}, pdv={pdv}")
+        logger.debug(f"Parámetros: year={year}, month={month}, day={day}, product_desc={product_desc}, status={status}, pdv={pdv}")
 
         # Obtener PDVs según estatus
         pdv_query = "SELECT PDV, data2 FROM PuntosDeVenta WHERE IdCliente = %s"
@@ -10183,6 +10184,10 @@ def get_product_profit():
             AND EXTRACT(MONTH FROM vh.fecha) = %s
         """
         query_params = [id_cliente, year, month]
+
+        if day:
+            sales_query += " AND EXTRACT(DAY FROM vh.fecha) = %s"
+            query_params.append(day)
 
         if product_desc:
             sales_query += " AND vh.descripcion = %s"
@@ -10219,7 +10224,7 @@ def get_product_profit():
         producto_mapping = {}
         for desc in sales_by_product:
             producto = Producto.query.filter(
-                Producto.nombre == desc,  # Coincidencia exacta
+                Producto.nombre == desc,
                 Producto.idcliente == id_cliente
             ).first()
             if producto:
@@ -10273,7 +10278,11 @@ def get_product_profit():
                         AND EXTRACT(YEAR FROM k.fecha) = %s
                         AND EXTRACT(MONTH FROM k.fecha) = %s
                     """
-                    cursor.execute(kardex_query, [producto_id, id_cliente, tuple(bodegas_ids), year, month])
+                    kardex_params = [producto_id, id_cliente, tuple(bodegas_ids), year, month]
+                    if day:
+                        kardex_query += " AND EXTRACT(DAY FROM k.fecha) = %s"
+                        kardex_params.append(day)
+                    cursor.execute(kardex_query, kardex_params)
                     kardex_result = cursor.fetchone()
                     costo_total = float(kardex_result[0] or 0.0)
                     cantidad_kardex = float(kardex_result[1] or 0.0)
@@ -10304,7 +10313,11 @@ def get_product_profit():
                         AND EXTRACT(YEAR FROM op.fecha_finalizacion) = %s
                         AND EXTRACT(MONTH FROM op.fecha_finalizacion) = %s
                     """
-                    cursor.execute(prod_query, [producto_id, id_cliente, year, month])
+                    prod_params = [producto_id, id_cliente, year, month]
+                    if day:
+                        prod_query += " AND EXTRACT(DAY FROM op.fecha_finalizacion) = %s"
+                        prod_params.append(day)
+                    cursor.execute(prod_query, prod_params)
                     prod_result = cursor.fetchone()
                     costo_total_prod = float(prod_result[0] or 0.0)
                     cantidad_produccion = float(prod_result[1] or 0.0)
@@ -10335,6 +10348,7 @@ def get_product_profit():
         response = {
             'year': year,
             'month': month,
+            'day': day,
             'data': result
         }
         logger.info(f"Respuesta generada: {len(result)} productos")
