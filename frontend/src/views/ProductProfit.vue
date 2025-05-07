@@ -3,17 +3,17 @@
       <h1>Margen de Utilidad por Producto - {{ months[month - 1].name }} {{ year }} <span v-if="day"> (Día {{ day }})</span></h1>
       <div class="filters">
         <label>Año:</label>
-        <select v-model="year" @change="fetchData">
+        <select v-model="year" @change="updateDaysAndFetch">
           <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
         </select>
         <label>Mes:</label>
-        <select v-model="month" @change="onMonthChange">
+        <select v-model="month" @change="updateDaysAndFetch">
           <option v-for="m in months" :key="m.num" :value="m.num">{{ m.name }}</option>
         </select>
         <label>Día:</label>
         <select v-model="day" @change="fetchData">
           <option value="">Todos</option>
-          <option v-for="d in dayscfafterdays" :key="d" :value="d">{{ d }}</option>
+          <option v-for="d in daysInMonth" :key="d" :value="d">{{ d }}</option>
         </select>
         <label>Producto:</label>
         <select v-model="selectedProduct" @change="fetchData">
@@ -24,8 +24,8 @@
   
       <div class="actions">
         <button @click="exportToExcel">Exportar a Excel</button>
-        <button @click="downloadChart('profitChart')">Descargar Gráfico de Utilidad</button>
-        <button @click="downloadChart('salesVsCostsChart')">Descargar Gráfico de Ventas vs Costos</button>
+        <button @click="downloadChart('profitChart')">Descargar Gráfico de Margen</button>
+        <button @click="downloadChart('salesVsCostsChart')">Descargar Gráfico de Ventas y Costos</button>
       </div>
   
       <div v-if="noData" class="no-data-message">
@@ -34,15 +34,11 @@
   
       <div v-if="!noData" class="charts-container">
         <div class="chart-wrapper">
-          <h2>Margen de Utilidad por Producto</h2>
+          <h2>Margen y Utilidad por Producto ({{ chartData.length < productProfitData.length ? 'Top 10' : 'Todos' }})</h2>
           <Bar id="profitChart" :data="barChartData" :options="barChartOptions" />
         </div>
         <div class="chart-wrapper">
-          <h2>Utilidad en Pesos (COP)</h2>
-          <Bar id="utilityChart" :data="utilityChartData" :options="utilityChartOptions" />
-        </div>
-        <div class="chart-wrapper">
-          <h2>Ventas vs Costos de Producción vs Costos de Inventario</h2>
+          <h2>Ventas vs Costos y Utilidad ({{ chartData.length < productProfitData.length ? 'Top 10' : 'Todos' }})</h2>
           <Bar id="salesVsCostsChart" :data="salesVsCostsChartData" :options="salesVsCostsChartOptions" />
         </div>
       </div>
@@ -72,7 +68,7 @@
             </tr>
             <tr class="total-row">
               <td><strong>Total</strong></td>
-              <td><strong>{{ totals.cantidad_vendida.toFixed(2) }}</strong></td>
+              <td>-</td>
               <td><strong>{{ formatCurrency(totals.ventas) }}</strong></td>
               <td><strong>{{ formatCurrency(totals.costos) }}</strong></td>
               <td><strong>{{ formatCurrency(totals.produccion) }}</strong></td>
@@ -98,7 +94,9 @@
     Legend,
     BarElement,
     CategoryScale,
-    LinearScale
+    LinearScale,
+    LineElement,
+    PointElement
   } from 'chart.js';
   import ChartDataLabels from 'chartjs-plugin-datalabels';
   import * as XLSX from 'xlsx';
@@ -111,6 +109,8 @@
     BarElement,
     CategoryScale,
     LinearScale,
+    LineElement,
+    PointElement,
     ChartDataLabels
   );
   
@@ -128,17 +128,13 @@
       const currentYear = currentDate.getFullYear();
       const month = ref(currentMonth);
       const day = ref('');
+      const daysInMonth = ref([]);
       const months = ref([
         { num: 1, name: 'Enero' }, { num: 2, name: 'Febrero' }, { num: 3, name: 'Marzo' },
         { num: 4, name: 'Abril' }, { num: 5, name: 'Mayo' }, { num: 6, name: 'Junio' },
         { num: 7, name: 'Julio' }, { num: 8, name: 'Agosto' }, { num: 9, name: 'Septiembre' },
         { num: 10, name: 'Octubre' }, { num: 11, name: 'Noviembre' }, { num: 12, name: 'Diciembre' }
       ]);
-      const days = computed(() => {
-        if (!year.value || !month.value) return [];
-        const daysInMonth = new Date(year.value, month.value, 0).getDate();
-        return Array.from({ length: daysInMonth }, (_, i) => i + 1);
-      });
       const selectedProduct = ref('');
       const products = ref([]);
       const productProfitData = ref([]);
@@ -146,33 +142,45 @@
       const noData = computed(() => productProfitData.value.length === 0);
   
       const totals = computed(() => {
-        return productProfitData.value.reduce(
+        const result = productProfitData.value.reduce(
           (acc, row) => {
-            acc.cantidad_vendida += row.cantidad_vendida;
             acc.ventas += row.ventas;
             acc.costos += row.costos;
             acc.produccion += row.produccion;
             acc.utilidad += row.utilidad;
-            acc.margen += row.margen * row.ventas; // Ponderado por ventas
+            acc.margen += row.margen * row.ventas;
             return acc;
           },
-          {
-            cantidad_vendida: 0,
-            ventas: 0,
-            costos: 0,
-            produccion: 0,
-            utilidad: 0,
-            margen: 0
-          }
+          { ventas: 0, costos: 0, produccion: 0, utilidad: 0, margen: 0 }
         );
+        if (result.ventas > 0) {
+          result.margen = (result.margen / result.ventas);
+        }
+        return result;
       });
   
-      computed(() => {
-        if (totals.value.ventas > 0) {
-          totals.value.margen = (totals.value.margen / totals.value.ventas);
+      const chartData = computed(() => {
+        if (productProfitData.value.length <= 10) {
+          return productProfitData.value;
         }
-        return totals.value;
+        return [...productProfitData.value]
+          .sort((a, b) => b.ventas - a.ventas)
+          .slice(0, 10);
       });
+  
+      const updateDaysInMonth = () => {
+        if (!year.value || !month.value) return;
+        const daysInMonthMap = {
+          1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
+          7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31
+        };
+        if (month.value === 2 && year.value % 4 === 0 && (year.value % 100 !== 0 || year.value % 400 === 0)) {
+          daysInMonthMap[2] = 29;
+        }
+        const numDays = daysInMonthMap[month.value] || 30;
+        daysInMonth.value = Array.from({ length: numDays }, (_, i) => i + 1);
+        day.value = '';
+      };
   
       const fetchAvailableYears = async () => {
         try {
@@ -180,6 +188,7 @@
           years.value = response.data.years || [];
           if (years.value.length > 0) {
             year.value = years.value.includes(currentYear) ? currentYear : years.value[0];
+            updateDaysInMonth();
             fetchProducts();
             fetchData();
           }
@@ -187,6 +196,7 @@
           console.error('Error fetching available years:', error);
           years.value = Array.from({ length: 5 }, (_, i) => currentYear + i - 2);
           year.value = currentYear;
+          updateDaysInMonth();
           if (error.response && error.response.status === 401) {
             router.push('/login');
           } else {
@@ -226,8 +236,8 @@
         }
       };
   
-      const onMonthChange = () => {
-        day.value = ''; // Resetear día al cambiar el mes
+      const updateDaysAndFetch = () => {
+        updateDaysInMonth();
         fetchProducts();
         fetchData();
       };
@@ -237,11 +247,11 @@
       };
   
       const barChartData = computed(() => ({
-        labels: productProfitData.value.map(row => row.descripcion),
+        labels: chartData.value.map(row => row.descripcion),
         datasets: [
           {
             label: 'Margen de Utilidad (%)',
-            data: productProfitData.value.map(row => row.margen),
+            data: chartData.value.map(row => row.margen),
             backgroundColor: 'rgba(153, 102, 255, 0.6)',
             borderColor: 'rgba(153, 102, 255, 1)',
             borderWidth: 1
@@ -249,11 +259,14 @@
         ]
       }));
   
-      const barChartOptions = {
+      const barChartOptions = computed(() => ({
         responsive: true,
         maintainAspectRatio: false,
         scales: {
-          y: { beginAtZero: true, title: { display: true, text: 'Margen (%)' } },
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: 'Margen (%)' }
+          },
           x: { title: { display: true, text: 'Producto' } }
         },
         plugins: {
@@ -261,7 +274,11 @@
           tooltip: {
             callbacks: {
               label: function(context) {
-                return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}%`;
+                const row = chartData.value[context.dataIndex];
+                return [
+                  `${context.dataset.label}: ${context.parsed.y.toFixed(2)}%`,
+                  `Utilidad: ${formatCurrency(row.utilidad)}`
+                ];
               }
             }
           },
@@ -270,79 +287,98 @@
             anchor: 'center',
             align: 'center',
             color: '#fff',
-            font: { size: 11, weight: 'bold' },
-            formatter: function(value) {
-              return `${value.toFixed(2)}%`;
+            font: {
+              size: 13, // Ajusta este valor para cambiar el tamaño de los valores en las barras (por ejemplo, 14, 15, etc.)
+              weight: 'bold'
+            },
+            formatter: function(value, context) {
+              const row = chartData.value[context.dataIndex];
+              return `${value.toFixed(2)}%\n${formatCurrency(row.utilidad)}`;
             }
           }
         }
-      };
-  
-      const utilityChartData = computed(() => ({
-        labels: productProfitData.value.map(row => row.descripcion),
-        datasets: [
-          {
-            label: 'Utilidad (COP)',
-            data: productProfitData.value.map(row => row.utilidad),
-            backgroundColor: 'rgba(75, 192, 192, 0.6)',
-            borderColor: 'rgba(75, 192, 192, 1)',
-            borderWidth: 1
-          }
-        ]
       }));
   
-      const utilityChartOptions = {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          y: { beginAtZero: true, title: { display: true, text: 'Utilidad (COP)' } },
-          x: { title: { display: true, text: 'Producto' } }
-        },
-        plugins: {
-          legend: { display: true },
-          tooltip: {
-            callbacks: {
-              label: function(context) {
-                return `${context.dataset.label}: ${formatCurrency(context.parsed.y)}`;
+      const salesVsCostsChartData = computed(() => ({
+        labels: chartData.value.map(row => row.descripcion),
+        datasets: [
+          {
+            type: 'bar',
+            label: 'Ventas',
+            data: chartData.value.map(row => row.ventas),
+            backgroundColor: 'rgba(54, 162, 235, 0.6)',
+            borderColor: 'rgba(54, 162, 235, 1)',
+            borderWidth: 1,
+            yAxisID: 'y',
+            datalabels: {
+              display: !!selectedProduct.value,
+              anchor: 'center',
+              align: 'center',
+              color: '#fff',
+              font: { size: 11, weight: 'bold' },
+              formatter: function(value) {
+                return formatCurrency(value);
               }
             }
           },
-          datalabels: {
-            display: true,
-            anchor: 'center',
-            align: 'center',
-            color: '#fff',
-            font: { size: 11, weight: 'bold' },
-            formatter: function(value) {
-              return formatCurrency(value);
-            }
-          }
-        }
-      };
-  
-      const salesVsCostsChartData = computed(() => ({
-        labels: productProfitData.value.map(row => row.descripcion),
-        datasets: [
           {
-            label: 'Ventas',
-            data: productProfitData.value.map(row => row.ventas),
-            backgroundColor: 'rgba(54, 162, 235, 0.6)',
-            borderColor: 'rgba(54, 162, 235, 1)',
-            borderWidth: 1
-          },
-          {
+            type: 'bar',
             label: 'Costos de Producción',
-            data: productProfitData.value.map(row => row.produccion),
+            data: chartData.value.map(row => row.produccion),
             backgroundColor: 'rgba(255, 99, 132, 0.6)',
             borderColor: 'rgba(255, 99, 132, 1)',
-            borderWidth: 1
+            borderWidth: 1,
+            yAxisID: 'y',
+            datalabels: {
+              display: !!selectedProduct.value,
+              anchor: 'center',
+              align: 'center',
+              color: '#fff',
+              font: { size: 11, weight: 'bold' },
+              formatter: function(value) {
+                return formatCurrency(value);
+              }
+            }
           },
           {
+            type: 'bar',
             label: 'Costos de Inventario',
-            data: productProfitData.value.map(row => row.costos),
+            data: chartData.value.map(row => row.costos),
             backgroundColor: 'rgba(255, 206, 86, 0.6)',
             borderColor: 'rgba(255, 206, 86, 1)',
-            borderWidth: 1
+            borderWidth: 1,
+            yAxisID: 'y',
+            datalabels: {
+              display: !!selectedProduct.value,
+              anchor: 'center',
+              align: 'center',
+              color: '#fff',
+              font: { size: 11, weight: 'bold' },
+              formatter: function(value) {
+                return formatCurrency(value);
+              }
+            }
+          },
+          {
+            type: 'line',
+            label: 'Utilidad (COP)',
+            data: chartData.value.map(row => row.utilidad),
+            borderColor: 'rgba(75, 192, 192, 1)',
+            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+            borderWidth: 2,
+            fill: false,
+            tension: 0.1,
+            yAxisID: 'y1',
+            datalabels: {
+              display: true,
+              anchor: 'end',
+              align: 'top',
+              color: '#000',
+              font: { size: 11, weight: 'bold' },
+              formatter: function(value) {
+                return formatCurrency(value);
+              }
+            }
           }
         ]
       }));
@@ -351,20 +387,35 @@
         responsive: true,
         maintainAspectRatio: false,
         scales: {
-          x: { stacked: false, title: { display: true, text: 'Producto' } },
-          y: { stacked: false, beginAtZero: true, title: { display: true, text: 'Valor (COP)' } }
+          x: { title: { display: true, text: 'Producto' } },
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: 'Valor (COP)' },
+            position: 'left'
+          },
+          y1: {
+            beginAtZero: true,
+            title: { display: true, text: 'Utilidad (COP)' },
+            position: 'right',
+            grid: { drawOnChartArea: false },
+            ticks: {
+              callback: function(value) {
+                return formatCurrency(value);
+              }
+            }
+          }
         },
         plugins: {
           legend: { display: true },
           tooltip: {
             callbacks: {
               label: function(context) {
+                if (context.dataset.type === 'line') {
+                  return `${context.dataset.label}: ${formatCurrency(context.parsed.y)}`;
+                }
                 return `${context.dataset.label}: ${formatCurrency(context.parsed.y)}`;
               }
             }
-          },
-          datalabels: {
-            display: false // Desactivar etiquetas para evitar clutter
           }
         }
       };
@@ -380,10 +431,9 @@
           'Margen (%)': row.margen
         }));
   
-        // Agregar fila de totales
         data.push({
           Producto: 'Total',
-          'Cantidad Vendida': totals.value.cantidad_vendida,
+          'Cantidad Vendida': '-',
           Ventas: totals.value.ventas,
           Costos: totals.value.costos,
           Producción: totals.value.produccion,
@@ -419,19 +469,18 @@
         month,
         months,
         day,
-        days,
+        daysInMonth,
         selectedProduct,
         products,
         productProfitData,
         noData,
         totals,
+        chartData,
         fetchData,
-        onMonthChange,
+        updateDaysAndFetch,
         formatCurrency,
         barChartData,
         barChartOptions,
-        utilityChartData,
-        utilityChartOptions,
         salesVsCostsChartData,
         salesVsCostsChartOptions,
         exportToExcel,
@@ -530,7 +579,7 @@
   }
   
   .chart-wrapper {
-    margin-bottom: 40px;
+    margin-bottom: 60px;
     height: 400px;
   }
   
