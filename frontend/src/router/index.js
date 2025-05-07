@@ -151,6 +151,9 @@ const routes = [
   { path: '/dashboard/sales-by-product', name: 'SalesByProduct', component: SalesByProduct, meta: { requiresAuth: true, seccion: 'dashboard', subseccion: 'ventas_producto', permiso: 'ver' } },
   { path: '/dashboard/sales-by-seller', name: 'SalesBySeller', component: SalesBySeller, meta: { requiresAuth: true, seccion: 'dashboard', subseccion: 'ventas_asesor', permiso: 'ver' } },
   { path: '/dashboard/accumulated-sales-by-pdv', name: 'AccumulatedSalesByPDV', component: AccumulatedSalesByPDV, meta: { requiresAuth: true, seccion: 'dashboard', subseccion: 'venta_acumulada_pdv', permiso: 'ver' } },
+  { path: '/dashboard/daily-profit', name: 'DailyProfit', component: () => import('../views/DailyProfit.vue'), meta: { requiresAuth: true, seccion: 'dashboard', subseccion: 'daily_profit', permiso: 'ver' } },
+  { path: '/dashboard/product-profit', name: 'ProductProfit', component: () => import('../views/ProductProfit.vue'), meta: { requiresAuth: true, seccion: 'dashboard', subseccion: 'product_profit', permiso: 'ver' } },
+  
   { path: '/points-of-sale', name: 'PointsOfSale', component: PointsOfSale, meta: { requiresAuth: true, seccion: 'cargue', subseccion: 'puntos_de_venta', permiso: 'editar' } },
   { path: '/profiles-clientes', name: 'ProfilesClientes', component: ProfilesClientes, meta: { requiresAuth: true, seccion: 'parametrizacion', subseccion: 'perfiles', permiso: 'editar' } },
   { path: '/users-clientes', name: 'UsersClientes', component: UsersClientes, meta: { requiresAuth: true, seccion: 'parametrizacion', subseccion: 'usuarios', permiso: 'editar' } },

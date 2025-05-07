@@ -75,6 +75,22 @@
             <font-awesome-icon icon="chart-bar" class="card-icon" />
             <span>Venta Acumulada por PDV</span>
           </router-link>
+          <router-link
+            v-if="store.getters.hasPermission('dashboard', 'daily_profit', 'ver')"
+            to="/dashboard/daily-profit"
+            class="card"
+          >
+            <font-awesome-icon icon="dollar-sign" class="card-icon" />
+            <span>Utilidad Diaria</span>
+          </router-link>
+          <router-link
+            v-if="store.getters.hasPermission('dashboard', 'product_profit', 'ver')"
+            to="/dashboard/product-profit"
+            class="card"
+          >
+            <font-awesome-icon icon="chart-pie" class="card-icon" />
+            <span>Utilidad por Producto</span>
+          </router-link>
         </div>
       </div>
 

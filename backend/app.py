@@ -9950,6 +9950,393 @@ def verificar_sincronizacion():
         return jsonify({'message': 'Error al verificar sincronización'}), 500
 
 
+# Endpoints de la pagina de Utilidad Diaria
+@app.route('/dashboard/daily-profit', methods=['GET'])
+@jwt_required()
+def get_daily_profit():
+    try:
+        # Conexión a la base de datos
+        conn = psycopg2.connect(
+            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
+            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
+            port=app.config['DB_PORT']
+        )
+        cursor = conn.cursor()
+
+        # Obtener id_cliente
+        user_id = get_jwt_identity()
+        cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
+        id_cliente_result = cursor.fetchone()
+        if not id_cliente_result:
+            conn.close()
+            return jsonify({"error": "Usuario no encontrado"}), 404
+        id_cliente = id_cliente_result[0]
+        logger.debug(f"Cliente encontrado: id_cliente={id_cliente}")
+
+        # Obtener parámetros
+        year = request.args.get('year', type=int, default=datetime.now().year)
+        month = request.args.get('month', type=int, default=datetime.now().month)
+        status = request.args.get('status', default='Activo', type=str)
+        pdv = request.args.get('pdv', type=str)
+        day = request.args.get('day', type=int)
+        logger.debug(f"Parámetros: year={year}, month={month}, status={status}, pdv={pdv}, day={day}")
+
+        # Obtener PDVs según estatus
+        pdv_query = "SELECT PDV, data2 FROM PuntosDeVenta WHERE IdCliente = %s"
+        params = [id_cliente]
+        if status != 'Todos':
+            pdv_query += " AND Estado = %s"
+            params.append(status)
+        cursor.execute(pdv_query, params)
+        pdv_data = cursor.fetchall()
+        all_pdvs = [row[0] for row in pdv_data]
+        pdv_mapping = {row[0]: row[1] for row in pdv_data}
+        pdv_mapping['ACA - Caja Portal'] = 'Portal del Prado'
+        pdv_mapping['AQA - Caja la Castellana'] = 'La Castellana'
+        logger.debug(f"PDVs obtenidos: {all_pdvs}, Mapeo: {pdv_mapping}")
+
+        # Determinar días del mes
+        days_in_month = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
+        if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+            days_in_month[2] = 29
+        num_days = days_in_month.get(month, 30)
+        start_date = datetime(year, month, 1)
+        if day and day != 'Todos':
+            dates = [datetime(year, month, day)]
+        else:
+            dates = [start_date + timedelta(days=i) for i in range(num_days)]
+        date_strings = [d.strftime('%Y-%m-%d') for d in dates]
+        logger.debug(f"Fechas procesadas: {date_strings}")
+
+        # Consultar ventas por producto y PDV
+        sales_query = """
+            SELECT DATE(vh.fecha) as fecha, vh.almacen as pdv, vh.descripcion as producto,
+                   SUM(vh.uds) as cantidad_vendida, SUM(vh.importe) as venta
+            FROM ventahistoricahora vh
+            WHERE vh.idcliente = %s
+            AND EXTRACT(YEAR FROM vh.fecha) = %s
+            AND EXTRACT(MONTH FROM vh.fecha) = %s
+        """
+        query_params = [id_cliente, year, month]
+
+        if pdv and pdv != 'Todos':
+            short_name = pdv_mapping.get(pdv, pdv)
+            sales_query += " AND vh.almacen = %s"
+            query_params.append(short_name)
+
+        if day and day != 'Todos':
+            sales_query += " AND EXTRACT(DAY FROM vh.fecha) = %s"
+            query_params.append(day)
+
+        sales_query += """
+            GROUP BY DATE(vh.fecha), vh.almacen, vh.descripcion
+            ORDER BY DATE(vh.fecha), vh.almacen, vh.descripcion
+        """
+        cursor.execute(sales_query, query_params)
+        sales_data = cursor.fetchall()
+        logger.debug(f"Datos de ventas: {len(sales_data)} registros")
+
+        # Obtener productos únicos y mapear a producto_id
+        productos_vendidos = set(row[2] for row in sales_data)
+        producto_mapping = {}
+        for desc in productos_vendidos:
+            producto = Producto.query.filter_by(nombre=desc, idcliente=id_cliente).first()
+            if producto:
+                producto_mapping[desc] = producto.id
+            else:
+                logger.warning(f"Producto {desc} no encontrado en tabla Producto")
+        logger.debug(f"Productos mapeados: {len(producto_mapping)}")
+
+        # Obtener costos desde el kardex
+        costos_por_producto = {}
+        for desc in productos_vendidos:
+            producto_id = producto_mapping.get(desc)
+            if not producto_id:
+                costos_por_producto[(desc, None, None)] = {'costo_total': 0, 'cantidad_vendida': 0}
+                continue
+
+            for date in dates:
+                fecha_inicio = date.strftime('%Y-%m-%d')
+                fecha_fin = fecha_inicio + ' 23:59:59'
+                kardex_query = """
+                    SELECT SUM(k.costo_total) as costo_total, SUM(k.cantidad) as cantidad
+                    FROM kardex k
+                    WHERE k.producto_id = %s
+                    AND k.idcliente = %s
+                    AND k.tipo_movimiento = 'SALIDA'
+                    AND k.fecha BETWEEN %s AND %s
+                """
+                kardex_params = [producto_id, id_cliente, fecha_inicio, fecha_fin]
+
+                if pdv and pdv != 'Todos':
+                    bodega_query = """
+                        SELECT id FROM bodegas WHERE nombre = %s AND idcliente = %s
+                    """
+                    cursor.execute(bodega_query, [pdv_mapping.get(pdv, pdv), id_cliente])
+                    bodega = cursor.fetchone()
+                    if bodega:
+                        kardex_query += " AND k.bodega_origen_id = %s"
+                        kardex_params.append(bodega[0])
+
+                cursor.execute(kardex_query, kardex_params)
+                kardex_result = cursor.fetchone()
+                costo_total = float(kardex_result[0] or 0)
+                cantidad_vendida = float(kardex_result[1] or 0)
+                costos_por_producto[(desc, fecha_inicio, pdv or 'Todos')] = {
+                    'costo_total': costo_total,
+                    'cantidad_vendida': cantidad_vendida
+                }
+        logger.debug(f"Costos calculados para {len(costos_por_producto)} combinaciones")
+
+        # Obtener costos de producción desde ordenes_produccion
+        produccion_costos = {}
+        for desc in productos_vendidos:
+            producto_id = producto_mapping.get(desc)
+            if not producto_id:
+                continue
+            producto = Producto.query.filter_by(id=producto_id, idcliente=id_cliente).first()
+            if producto and producto.es_producto_compuesto:
+                prod_query = """
+                    SELECT SUM(op.costo_total) as costo_total, SUM(op.cantidad_paquetes) as cantidad
+                    FROM ordenes_produccion op
+                    WHERE op.producto_compuesto_id = %s
+                    AND op.idcliente = %s
+                    AND op.estado = 'Finalizada'
+                    AND op.fecha_finalizacion BETWEEN %s AND %s
+                """
+                for date in dates:
+                    fecha_inicio = date.strftime('%Y-%m-%d')
+                    fecha_fin = fecha_inicio + ' 23:59:59'
+                    cursor.execute(prod_query, [producto_id, id_cliente, fecha_inicio, fecha_fin])
+                    prod_result = cursor.fetchone()
+                    costo_total = float(prod_result[0] or 0)
+                    cantidad_producida = float(prod_result[1] or 0)
+                    produccion_costos[(desc, fecha_inicio)] = {
+                        'costo_produccion': costo_total,
+                        'cantidad_producida': cantidad_producida
+                    }
+        logger.debug(f"Costos de producción: {len(produccion_costos)} registros")
+
+        # Estructurar los datos
+        result = []
+        totals_by_pdv = {pdv: {'ventas': 0, 'costos': 0, 'produccion': 0, 'utilidad': 0} for pdv in all_pdvs}
+        for date in dates:
+            date_str = date.strftime('%Y-%m-%d')
+            day_name = date.strftime('%A').lower()
+            day_names_es = {
+                'monday': 'lunes', 'tuesday': 'martes', 'wednesday': 'miércoles', 'thursday': 'jueves',
+                'friday': 'viernes', 'saturday': 'sábado', 'sunday': 'domingo'
+            }
+            formatted_date = f"{day_names_es.get(day_name, day_name)}, {date.strftime('%d/%m/%Y')}"
+
+            row = {'date': formatted_date}
+            daily_total_ventas = 0
+            daily_total_costos = 0
+            daily_total_produccion = 0
+            daily_total_utilidad = 0
+
+            for pdv_name in all_pdvs:
+                short_name = pdv_mapping.get(pdv_name, pdv_name)
+                ventas_pdv = sum(
+                    float(row[4]) for row in sales_data
+                    if row[0].strftime('%Y-%m-%d') == date_str and row[1] == short_name
+                )
+                costos_pdv = 0
+                produccion_pdv = 0
+
+                for row in sales_data:
+                    if row[0].strftime('%Y-%m-%d') == date_str and row[1] == short_name:
+                        desc = row[2]
+                        cantidad_vendida = float(row[3])
+                        costo_data = costos_por_producto.get((desc, date_str, pdv_name), {'costo_total': 0, 'cantidad_vendida': 0})
+                        if costo_data['cantidad_vendida'] > 0:
+                            costo_unitario = costo_data['costo_total'] / costo_data['cantidad_vendida']
+                            costos_pdv += costo_unitario * cantidad_vendida
+                        prod_data = produccion_costos.get((desc, date_str), {'costo_produccion': 0, 'cantidad_producida': 0})
+                        if prod_data['cantidad_producida'] > 0:
+                            costo_unitario_prod = prod_data['costo_produccion'] / prod_data['cantidad_producida']
+                            produccion_pdv += costo_unitario_prod * cantidad_vendida
+
+                utilidad_pdv = ventas_pdv - costos_pdv - produccion_pdv
+                row[pdv_name] = {
+                    'ventas': ventas_pdv,
+                    'costos': costos_pdv,
+                    'produccion': produccion_pdv,
+                    'utilidad': utilidad_pdv
+                }
+                daily_total_ventas += ventas_pdv
+                daily_total_costos += costos_pdv
+                daily_total_produccion += produccion_pdv
+                daily_total_utilidad += utilidad_pdv
+
+                totals_by_pdv[pdv_name]['ventas'] += ventas_pdv
+                totals_by_pdv[pdv_name]['costos'] += costos_pdv
+                totals_by_pdv[pdv_name]['produccion'] += produccion_pdv
+                totals_by_pdv[pdv_name]['utilidad'] += utilidad_pdv
+
+            row['total'] = {
+                'ventas': daily_total_ventas,
+                'costos': daily_total_costos,
+                'produccion': daily_total_produccion,
+                'utilidad': daily_total_utilidad
+            }
+            result.append(row)
+
+        # Fila de totales
+        totals_row = {'date': 'TOTALES'}
+        for pdv_name in all_pdvs:
+            totals_row[pdv_name] = totals_by_pdv[pdv_name]
+        totals_row['total'] = {
+            'ventas': sum(t['ventas'] for t in totals_by_pdv.values()),
+            'costos': sum(t['costos'] for t in totals_by_pdv.values()),
+            'produccion': sum(t['produccion'] for t in totals_by_pdv.values()),
+            'utilidad': sum(t['utilidad'] for t in totals_by_pdv.values())
+        }
+
+        response = {
+            'year': year,
+            'month': month,
+            'pdvs': all_pdvs,
+            'data': result,
+            'totals': totals_row
+        }
+        logger.info(f"Respuesta generada: {len(result)} días procesados")
+        conn.close()
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error en daily-profit: {str(e)}", exc_info=True)
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({"error": str(e)}), 500
+    
+
+# Endpoint de pagina de utilidad por producto
+@app.route('/dashboard/product-profit', methods=['GET'])
+@jwt_required()
+def get_product_profit():
+    try:
+        # Conexión a la base de datos
+        conn = psycopg2.connect(
+            dbname=app.config['DB_NAME'], user=app.config['DB_USER'],
+            password=app.config['DB_PASSWORD'], host=app.config['DB_HOST'],
+            port=app.config['DB_PORT']
+        )
+        cursor = conn.cursor()
+
+        # Obtener id_cliente
+        user_id = get_jwt_identity()
+        cursor.execute("SELECT IdCliente FROM Usuarios WHERE Id = %s", (user_id,))
+        id_cliente_result = cursor.fetchone()
+        if not id_cliente_result:
+            conn.close()
+            return jsonify({"error": "Usuario no encontrado"}), 404
+        id_cliente = id_cliente_result[0]
+        logger.debug(f"Cliente encontrado: id_cliente={id_cliente}")
+
+        # Parámetros
+        year = request.args.get('year', type=int, default=datetime.now().year)
+        month = request.args.get('month', type=int, default=datetime.now().month)
+        product_desc = request.args.get('product_desc', type=str)
+        logger.debug(f"Parámetros: year={year}, month={month}, product_desc={product_desc}")
+
+        # Consultar ventas por producto
+        sales_query = """
+            SELECT vh.descripcion as producto, SUM(vh.uds) as cantidad_vendida, SUM(vh.importe) as venta
+            FROM ventahistoricahora vh
+            WHERE vh.idcliente = %s
+            AND EXTRACT(YEAR FROM vh.fecha) = %s
+            AND EXTRACT(MONTH FROM vh.fecha) = %s
+        """
+        query_params = [id_cliente, year, month]
+
+        if product_desc:
+            sales_query += " AND vh.descripcion = %s"
+            query_params.append(product_desc)
+
+        sales_query += """
+            GROUP BY vh.descripcion
+            ORDER BY vh.descripcion
+        """
+        cursor.execute(sales_query, query_params)
+        sales_data = cursor.fetchall()
+        logger.debug(f"Datos de ventas: {len(sales_data)} productos")
+
+        # Mapear descripciones a producto_id
+        producto_mapping = {}
+        for desc, _, _ in sales_data:
+            producto = Producto.query.filter_by(nombre=desc, idcliente=id_cliente).first()
+            if producto:
+                producto_mapping[desc] = producto.id
+            else:
+                logger.warning(f"Producto {desc} no encontrado en tabla Producto")
+
+        # Calcular costos y utilidad
+        result = []
+        for desc, cantidad_vendida, venta in sales_data:
+            producto_id = producto_mapping.get(desc)
+            costo_total = 0
+            costo_produccion = 0
+
+            if producto_id:
+                # Costos desde kardex
+                kardex_query = """
+                    SELECT SUM(k.costo_total) as costo_total, SUM(k.cantidad) as cantidad
+                    FROM kardex k
+                    WHERE k.producto_id = %s
+                    AND k.idcliente = %s
+                    AND k.tipo_movimiento = 'SALIDA'
+                    AND EXTRACT(YEAR FROM k.fecha) = %s
+                    AND EXTRACT(MONTH FROM k.fecha) = %s
+                """
+                cursor.execute(kardex_query, [producto_id, id_cliente, year, month])
+                kardex_result = cursor.fetchone()
+                costo_total = float(kardex_result[0] or 0)
+
+                # Costos de producción desde ordenes_produccion
+                producto = Producto.query.filter_by(id=producto_id, idcliente=id_cliente).first()
+                if producto and producto.es_producto_compuesto:
+                    prod_query = """
+                        SELECT SUM(op.costo_total) as costo_total
+                        FROM ordenes_produccion op
+                        WHERE op.producto_compuesto_id = %s
+                        AND op.idcliente = %s
+                        AND op.estado = 'Finalizada'
+                        AND EXTRACT(YEAR FROM op.fecha_finalizacion) = %s
+                        AND EXTRACT(MONTH FROM op.fecha_finalizacion) = %s
+                    """
+                    cursor.execute(prod_query, [producto_id, id_cliente, year, month])
+                    prod_result = cursor.fetchone()
+                    costo_produccion = float(prod_result[0] or 0)
+
+            utilidad = float(venta) - costo_total - costo_produccion
+            margen = (utilidad / float(venta) * 100) if float(venta) > 0 else 0
+
+            result.append({
+                'descripcion': desc,
+                'cantidad_vendida': float(cantidad_vendida),
+                'ventas': float(venta),
+                'costos': costo_total,
+                'produccion': costo_produccion,
+                'utilidad': utilidad,
+                'margen': round(margen, 2)
+            })
+
+        response = {
+            'year': year,
+            'month': month,
+            'data': result
+        }
+        logger.info(f"Respuesta generada: {len(result)} productos")
+        conn.close()
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error en product-profit: {str(e)}", exc_info=True)
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({"error": str(e)}), 500
+
 
 #if __name__ == '__main__':
 #    app.run(debug=True, host='0.0.0.0', port=5000)
