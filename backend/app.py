@@ -9877,7 +9877,8 @@ def get_daily_profit():
         pdv_mapping = {row[0]: row[1] for row in pdv_data}
         pdv_mapping['ACA - Caja Portal'] = 'Portal del Prado'
         pdv_mapping['AQA - Caja la Castellana'] = 'La Castellana'
-        logger.debug(f"PDVs obtenidos: {all_pdvs}, Mapeo: {pdv_mapping}")
+        inverse_pdv_mapping = {v: k for k, v in pdv_mapping.items()}
+        logger.debug(f"PDVs obtenidos: {all_pdvs}, Mapeo: {pdv_mapping}, Mapeo inverso: {inverse_pdv_mapping}")
 
         # Validar PDV seleccionado
         if pdv and pdv != 'Todos' and pdv not in all_pdvs:
@@ -9902,8 +9903,8 @@ def get_daily_profit():
 
         # Consultar ventas por día y PDV
         sales_query = """
-            SELECT DATE(vh.fecha) as fecha, vh.almacen as pdv, vh.descripcion as producto,
-                   SUM(vh.uds) as cantidad_vendida, SUM(vh.importe) as venta
+            SELECT DATE(vh.fecha) as fecha, vh.almacen as pdv, SUM(vh.importe) as venta,
+                   SUM(vh.uds) as cantidad_vendida, vh.descripcion as producto
             FROM ventahistoricahora vh
             WHERE vh.idcliente = %s
             AND EXTRACT(YEAR FROM vh.fecha) = %s
@@ -9928,95 +9929,102 @@ def get_daily_profit():
         sales_data = cursor.fetchall()
         logger.debug(f"Datos de ventas: {len(sales_data)} registros, Ejemplo: {sales_data[:2] if sales_data else []}")
 
-        # Mapear descripciones a producto_id
-        productos_vendidos = set(row[2] for row in sales_data)
-        producto_mapping = {}
-        for desc in productos_vendidos:
-            producto = Producto.query.filter(
-                Producto.nombre.ilike(f'%{desc}%'),
-                Producto.idcliente == id_cliente
-            ).first()
-            if producto:
-                producto_mapping[desc] = {'id': producto.id, 'es_compuesto': producto.es_producto_compuesto}
-            else:
-                logger.warning(f"Producto {desc} no encontrado en tabla Producto")
-                producto_mapping[desc] = {'id': None, 'es_compuesto': False}
+        # Normalizar nombres de almacen
+        normalized_sales_data = []
+        for sale in sales_data:
+            fecha, almacen, venta, cantidad_vendida, producto = sale
+            normalized_almacen = inverse_pdv_mapping.get(almacen, almacen)
+            normalized_sales_data.append((fecha, normalized_almacen, venta, cantidad_vendida, producto))
+        sales_data = normalized_sales_data
+        logger.debug(f"Datos de ventas normalizados: {sales_data[:2] if sales_data else []}")
 
-        # Obtener ID de Planta Principal para excluirla
-        planta_principal = Bodega.query.filter(
-            Bodega.nombre == 'Planta Principal',
-            Bodega.idcliente == id_cliente
-        ).first()
-        planta_principal_id = planta_principal.id if planta_principal else None
-        logger.debug(f"Planta Principal ID: {planta_principal_id}")
-
-        # Calcular costos desde kardex
+        # Consultar costos de inventario desde kardex
         costos_por_dia_pdv = {}
-        for desc in productos_vendidos:
-            producto_info = producto_mapping.get(desc)
-            producto_id = producto_info['id']
-            if not producto_id:
-                continue
+        productos_vendidos = set(row[4] for row in sales_data)
+        for producto in productos_vendidos:
             for date in dates:
                 fecha_inicio = date.strftime('%Y-%m-%d')
                 fecha_fin = fecha_inicio + ' 23:59:59'
                 for pdv_name in all_pdvs:
                     short_name = pdv_mapping.get(pdv_name, pdv_name)
-                    bodega = Bodega.query.filter(
-                        Bodega.nombre == short_name,
-                        Bodega.idcliente == id_cliente
-                    ).first()
-                    if not bodega or (planta_principal_id and bodega.id == planta_principal_id):
+                    # Obtener bodega_origen_id
+                    cursor.execute(
+                        "SELECT id FROM Bodega WHERE nombre = %s AND idcliente = %s",
+                        (short_name, id_cliente)
+                    )
+                    bodega = cursor.fetchone()
+                    if not bodega:
+                        logger.debug(f"Bodega {short_name} no encontrada para idcliente={id_cliente}")
                         continue
+                    bodega_id = bodega[0]
                     kardex_query = """
                         SELECT SUM(k.costo_total) as costo_total, SUM(k.cantidad) as cantidad
                         FROM kardex k
-                        WHERE k.producto_id = %s
-                        AND k.idcliente = %s
+                        JOIN Producto p ON k.producto_id = p.id
+                        WHERE k.idcliente = %s
                         AND k.tipo_movimiento = 'SALIDA'
                         AND k.bodega_origen_id = %s
+                        AND p.nombre ILIKE %s
                         AND k.fecha BETWEEN %s AND %s
                     """
-                    kardex_params = [producto_id, id_cliente, bodega.id, fecha_inicio, fecha_fin]
+                    kardex_params = [id_cliente, bodega_id, f'%{producto}%', fecha_inicio, fecha_fin]
                     cursor.execute(kardex_query, kardex_params)
                     kardex_result = cursor.fetchone()
                     costo_total = float(kardex_result[0] or 0.0)
                     cantidad_kardex = float(kardex_result[1] or 0.0)
-                    costos_por_dia_pdv[(desc, fecha_inicio, pdv_name)] = {
+                    costos_por_dia_pdv[(producto, fecha_inicio, pdv_name)] = {
                         'costo_total': round(costo_total, 2),
                         'cantidad_vendida': round(cantidad_kardex, 2)
                     }
-                    logger.debug(f"Kardex para {desc}, {fecha_inicio}, {pdv_name}: costo_total={costo_total}, cantidad={cantidad_kardex}")
+                    # Verificar discrepancias
+                    ventas_cantidad = sum(
+                        float(sale[3]) for sale in sales_data
+                        if sale[0].strftime('%Y-%m-%d') == fecha_inicio and sale[1] == pdv_name and sale[4] == producto
+                    )
+                    if cantidad_kardex != ventas_cantidad:
+                        logger.warning(
+                            f"Discrepancia en cantidades para {producto} en {fecha_inicio}, PDV {pdv_name}: "
+                            f"vendido={ventas_cantidad}, kardex={cantidad_kardex}"
+                        )
 
-        # Calcular costos de producción
-        produccion_por_dia = {}
-        for desc in productos_vendidos:
-            producto_info = producto_mapping.get(desc)
-            producto_id = producto_info['id']
-            es_compuesto = producto_info['es_compuesto']
-            if not producto_id or not es_compuesto:
-                continue
+        # Consultar costos de producción desde ordenes_produccion
+        produccion_por_dia_pdv = {}
+        for producto in productos_vendidos:
             for date in dates:
                 fecha_inicio = date.strftime('%Y-%m-%d')
                 fecha_fin = fecha_inicio + ' 23:59:59'
-                prod_query = """
-                    SELECT SUM(op.costo_total) as costo_total, SUM(op.cantidad_paquetes) as cantidad
-                    FROM ordenes_produccion op
-                    WHERE op.producto_compuesto_id = %s
-                    AND op.idcliente = %s
-                    AND op.estado = 'Finalizada'
-                    AND op.fecha_finalizacion BETWEEN %s AND %s
-                """
-                prod_params = [producto_id, id_cliente, fecha_inicio, fecha_fin]
-                cursor.execute(prod_query, prod_params)
-                prod_result = cursor.fetchone()
-                costo_total = float(prod_result[0] or 0.0)
-                cantidad_produccion = float(prod_result[1] or 0.0)
-                produccion_por_dia[(desc, fecha_inicio)] = {
-                    'costo_produccion': round(costo_total, 2),
-                    'cantidad_producida': round(cantidad_produccion, 2)
-                }
-                logger.debug(f"Producción para {desc}, {fecha_inicio}: costo_total={costo_total}, cantidad={cantidad_produccion}")
+                for pdv_name in all_pdvs:
+                    short_name = pdv_mapping.get(pdv_name, pdv_name)
+                    cursor.execute(
+                        "SELECT id FROM Bodega WHERE nombre = %s AND idcliente = %s",
+                        (short_name, id_cliente)
+                    )
+                    bodega = cursor.fetchone()
+                    if not bodega:
+                        continue
+                    bodega_id = bodega[0]
+                    prod_query = """
+                        SELECT SUM(op.costo_total) as costo_total, SUM(op.cantidad_paquetes) as cantidad
+                        FROM ordenes_produccion op
+                        JOIN Producto p ON op.producto_compuesto_id = p.id
+                        WHERE op.idcliente = %s
+                        AND op.estado = 'Finalizada'
+                        AND p.nombre ILIKE %s
+                        AND op.fecha_finalizacion BETWEEN %s AND %s
+                    """
+                    prod_params = [id_cliente, f'%{producto}%', fecha_inicio, fecha_fin]
+                    cursor.execute(prod_query, prod_params)
+                    prod_result = cursor.fetchone()
+                    costo_total = float(prod_result[0] or 0.0)
+                    cantidad_produccion = float(prod_result[1] or 0.0)
+                    produccion_por_dia_pdv[(producto, fecha_inicio, pdv_name)] = {
+                        'costo_produccion': round(costo_total, 2),
+                        'cantidad_producida': round(cantidad_produccion, 2)
+                    }
+                    logger.debug(
+                        f"Producción para {producto}, {fecha_inicio}, PDV {pdv_name}: "
+                        f"costo_total={costo_total}, cantidad={cantidad_produccion}"
+                    )
 
         # Estructurar datos por día
         result = []
@@ -10035,6 +10043,7 @@ def get_daily_profit():
             daily_total_costos = 0.0
             daily_total_produccion = 0.0
             daily_total_utilidad = 0.0
+            has_sales = False
 
             for pdv_name in all_pdvs:
                 short_name = pdv_mapping.get(pdv_name, pdv_name)
@@ -10043,28 +10052,31 @@ def get_daily_profit():
                 produccion_pdv = 0.0
 
                 for sale in sales_data:
-                    if sale[0].strftime('%Y-%m-%d') != date_str or sale[1] != short_name:
+                    if sale[0].strftime('%Y-%m-%d') != date_str:
                         continue
-                    desc = sale[2]
+                    if sale[1] != pdv_name:
+                        continue
+                    producto = sale[4]
                     cantidad_vendida = float(sale[3])
-                    venta = float(sale[4])
+                    venta = float(sale[2])
                     ventas_pdv += venta
+                    has_sales = True
 
                     # Costos de inventario
-                    costo_data = costos_por_dia_pdv.get((desc, date_str, pdv_name), {'costo_total': 0.0, 'cantidad_vendida': 0.0})
+                    costo_data = costos_por_dia_pdv.get((producto, date_str, pdv_name), {'costo_total': 0.0, 'cantidad_vendida': 0.0})
                     if costo_data['cantidad_vendida'] > 0:
                         costo_unitario = costo_data['costo_total'] / costo_data['cantidad_vendida']
                         costos_pdv += costo_unitario * cantidad_vendida
                     else:
-                        logger.debug(f"No se encontraron movimientos de salida en kardex para {desc} en {date_str}, PDV {pdv_name}")
+                        logger.debug(f"No se encontraron movimientos de salida en kardex para {producto} en {date_str}, PDV {pdv_name}")
 
                     # Costos de producción
-                    prod_data = produccion_por_dia.get((desc, date_str), {'costo_produccion': 0.0, 'cantidad_producida': 0.0})
+                    prod_data = produccion_por_dia_pdv.get((producto, date_str, pdv_name), {'costo_produccion': 0.0, 'cantidad_producida': 0.0})
                     if prod_data['cantidad_producida'] > 0:
                         costo_unitario_prod = prod_data['costo_produccion'] / prod_data['cantidad_producida']
                         produccion_pdv += costo_unitario_prod * cantidad_vendida
                     else:
-                        logger.debug(f"No se encontraron costos de producción para {desc} en {date_str}")
+                        logger.debug(f"No se encontraron costos de producción para {producto} en {date_str}, PDV {pdv_name}")
 
                 utilidad_pdv = ventas_pdv - costos_pdv - produccion_pdv
                 row[pdv_name] = {
@@ -10083,7 +10095,10 @@ def get_daily_profit():
                 totals_by_pdv[pdv_name]['produccion'] += produccion_pdv
                 totals_by_pdv[pdv_name]['utilidad'] += utilidad_pdv
 
-                logger.debug(f"PDV {pdv_name} en {date_str}: ventas={ventas_pdv}, costos={costos_pdv}, produccion={produccion_pdv}, utilidad={utilidad_pdv}")
+                logger.debug(
+                    f"PDV {pdv_name} en {date_str}: ventas={ventas_pdv}, costos={costos_pdv}, "
+                    f"produccion={produccion_pdv}, utilidad={utilidad_pdv}"
+                )
 
             row['total'] = {
                 'ventas': round(daily_total_ventas, 2),
@@ -10091,8 +10106,8 @@ def get_daily_profit():
                 'produccion': round(daily_total_produccion, 2),
                 'utilidad': round(daily_total_utilidad, 2)
             }
-            # Incluir días con ventas, incluso si utilidad es 0, para depuración
-            if daily_total_ventas > 0 or day:
+
+            if has_sales or day:
                 result.append(row)
                 logger.debug(f"Día incluido: {formatted_date}, total_ventas={daily_total_ventas}, total_utilidad={daily_total_utilidad}")
 
@@ -10128,7 +10143,6 @@ def get_daily_profit():
         if 'conn' in locals():
             conn.close()
         return jsonify({"error": str(e)}), 500
-    
     
 
 # Endpoint de pagina de utilidad por producto
