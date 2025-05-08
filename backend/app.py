@@ -9894,9 +9894,8 @@ def get_daily_profit():
             sales_query += " AND EXTRACT(DAY FROM vh.fecha) = %s"
             query_params.append(day)
         if pdv and pdv != 'Todos':
-            short_name = pdv_mapping.get(pdv, pdv)
             sales_query += " AND vh.almacen = %s"
-            query_params.append(short_name)
+            query_params.append(pdv)
         elif status != 'Todos':
             sales_query += " AND vh.almacen IN (SELECT data2 FROM PuntosDeVenta WHERE IdCliente = %s AND Estado = %s)"
             query_params.extend([id_cliente, status])
@@ -9912,7 +9911,8 @@ def get_daily_profit():
         # Estructurar datos de ventas
         sales_by_date_almacen = {}
         for fecha, almacen, producto, cantidad_vendida, venta in sales_data:
-            date_str = fecha.strftime('%d/%m/%Y')
+            # Formatear fecha como "Mon, dd/MM/yyyy"
+            date_str = fecha.strftime('%a, %d/%m/%Y')
             if date_str not in sales_by_date_almacen:
                 sales_by_date_almacen[date_str] = {'pdvs': {}, 'productos': {}}
             if almacen not in sales_by_date_almacen[date_str]['pdvs']:
@@ -9969,9 +9969,8 @@ def get_daily_profit():
             composite_query += " AND EXTRACT(DAY FROM op.fecha_finalizacion) = %s"
             composite_params.append(day)
         if pdv and pdv != 'Todos':
-            short_name = pdv_mapping.get(pdv, pdv)
             composite_query += " AND b.nombre = %s"
-            composite_params.append(short_name)
+            composite_params.append(pdv)
         elif status != 'Todos':
             composite_query += " AND b.nombre IN (SELECT data2 FROM PuntosDeVenta WHERE IdCliente = %s AND Estado = %s)"
             composite_params.extend([id_cliente, status])
@@ -9986,7 +9985,7 @@ def get_daily_profit():
         # Estructurar consumo en compuestos
         composite_consumption = {}
         for fecha, almacen, producto_base, cantidad_consumida in composite_data:
-            date_str = fecha.strftime('%d/%m/%Y')
+            date_str = fecha.strftime('%a, %d/%m/%Y')
             if date_str not in composite_consumption:
                 composite_consumption[date_str] = {}
             if almacen not in composite_consumption[date_str]:
@@ -10040,7 +10039,7 @@ def get_daily_profit():
                                 AND k.bodega_origen_id = %s
                                 AND k.fecha::date = %s
                             """
-                            kardex_date = datetime.strptime(date_str, '%d/%m/%Y').date()
+                            kardex_date = datetime.strptime(date_str.split(', ')[1], '%d/%m/%Y').date()
                             kardex_params = [producto_id, id_cliente, bodega_id, kardex_date]
                             cursor.execute(kardex_query, kardex_params)
                             kardex_result = cursor.fetchone()
@@ -10070,7 +10069,7 @@ def get_daily_profit():
                                 AND op.fecha_finalizacion::date = %s
                                 AND op.bodega_produccion_id = %s
                             """
-                            prod_date = datetime.strptime(date_str, '%d/%m/%Y').date()
+                            prod_date = datetime.strptime(date_str.split(', ')[1], '%d/%m/%Y').date()
                             prod_params = [producto_id, id_cliente, prod_date, bodega_id]
                             cursor.execute(prod_query, prod_params)
                             prod_result = cursor.fetchone()
@@ -10086,7 +10085,7 @@ def get_daily_profit():
                                     f"costo_produccion={costo_producto}, cantidad_vendida={cantidad_vendida}"
                                 )
                             else:
-                                logger.warning(f"No se encontraron órdenes de producción para {producto} en {almacen} el {date_str}")
+                                logger.debug(f"No se encontraron órdenes de producción para {producto} en {almacen} el {date_str}")
 
                 # Calcular utilidad por PDV
                 pdvs[almacen]['utilidad'] = pdvs[almacen]['ventas'] - pdvs[almacen]['costos'] - pdvs[almacen]['produccion']
@@ -10117,7 +10116,7 @@ def get_daily_profit():
             'data': result,
             'pdvs': all_pdvs
         }
-        logger.info(f"Respuesta generada: {len(result)} registros")
+        logger.info(f"Respuesta generada: {len(result)} registros, datos: {response}")
         conn.close()
         return jsonify(response), 200
 
