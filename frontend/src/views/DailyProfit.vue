@@ -3,7 +3,7 @@
       <h1>Utilidad Diaria por PDV - {{ months[month - 1].name }} {{ year }}</h1>
       <div class="filters">
         <label>Año:</label>
-        <select v-model="year" @change="fetchData">
+        <select v-model="year" @change="updateDaysAndFetch">
           <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
         </select>
         <label>Mes:</label>
@@ -28,20 +28,22 @@
         </select>
       </div>
   
-      <!-- Mensaje si no hay datos -->
-      <div v-if="noData" class="no-data-message">
-        No hay datos disponibles para el mes, año y filtros seleccionados.
+      <div class="actions">
+        <button @click="exportToExcel">Exportar a Excel</button>
+        <button @click="downloadChart('barChart')">Descargar Gráfico de Utilidad por PDV</button>
+        <button @click="downloadChart('lineChart')">Descargar Gráfico de Tendencia</button>
       </div>
   
-      <!-- Gráficos -->
+      <div v-if="noData" class="no-data-message">
+        No hay datos disponibles para el mes, año, día y filtros seleccionados.
+      </div>
+  
       <div v-if="!noData" class="charts-container">
-        <!-- Gráfico de Barras: Utilidad Total por PDV -->
         <div class="chart-wrapper">
           <h2>Utilidad Total por PDV</h2>
-          <Bar :data="barChartData" :options="barChartOptions" />
+          <Bar id="barChart" :data="barChartData" :options="barChartOptions" />
         </div>
   
-        <!-- Gráfico de Líneas: Tendencia de Utilidad Diaria -->
         <div class="chart-wrapper">
           <h2>Tendencia de Utilidad Diaria</h2>
           <div class="pdv-selector">
@@ -51,11 +53,10 @@
               <option v-for="pdv in filteredPdvs" :key="pdv" :value="pdv">{{ pdv }}</option>
             </select>
           </div>
-          <Line :data="lineChartData" :options="lineChartOptions" />
+          <Line id="lineChart" :data="lineChartData" :options="lineChartOptions" />
         </div>
       </div>
   
-      <!-- Tabla -->
       <div v-if="!noData" class="table-container">
         <table class="profit-table">
           <thead>
@@ -124,6 +125,8 @@
     TimeScale
   } from 'chart.js';
   import ChartDataLabels from 'chartjs-plugin-datalabels';
+  import * as XLSX from 'xlsx';
+  import html2canvas from 'html2canvas';
   import 'chartjs-adapter-date-fns';
   
   ChartJS.register(
@@ -141,10 +144,7 @@
   
   export default {
     name: 'DailyProfit',
-    components: {
-      Bar,
-      Line
-    },
+    components: { Bar, Line },
     setup() {
       const store = useStore();
       const router = useRouter();
@@ -156,12 +156,6 @@
       const currentMonth = currentDate.getMonth() + 1;
       const currentYear = currentDate.getFullYear();
       const month = ref(currentMonth);
-      const months = ref([
-        { num: 1, name: 'Enero' }, { num: 2, name: 'Febrero' }, { num: 3, name: 'Marzo' },
-        { num: 4, name: 'Abril' }, { num: 5, name: 'Mayo' }, { num: 6, name: 'Junio' },
-        { num: 7, name: 'Julio' }, { num: 8, name: 'Agosto' }, { num: 9, name: 'Septiembre' },
-        { num: 10, name: 'Octubre' }, { num: 11, name: 'Noviembre' }, { num: 12, name: 'Diciembre' }
-      ]);
       const status = ref('Activo');
       const selectedPDV = ref('Todos');
       const selectedDay = ref('Todos');
@@ -174,18 +168,26 @@
       const filteredTotals = ref({});
       const selectedPdv = ref('total');
   
+      const months = ref([
+        { num: 1, name: 'Enero' }, { num: 2, name: 'Febrero' }, { num: 3, name: 'Marzo' },
+        { num: 4, name: 'Abril' }, { num: 5, name: 'Mayo' }, { num: 6, name: 'Junio' },
+        { num: 7, name: 'Julio' }, { num: 8, name: 'Agosto' }, { num: 9, name: 'Septiembre' },
+        { num: 10, name: 'Octubre' }, { num: 11, name: 'Noviembre' }, { num: 12, name: 'Diciembre' }
+      ]);
+  
       // Computed para determinar si no hay datos
       const noData = computed(() => {
-        const result = filteredDailyProfitData.value.length === 0 ||
-                      filteredDailyProfitData.value.every(row => row.total.utilidad === 0);
-        console.log('noData:', result, 'filteredDailyProfitData:', filteredDailyProfitData.value);
-        return result;
+        return filteredDailyProfitData.value.length === 0 ||
+               filteredDailyProfitData.value.every(row => row.total.utilidad === 0);
       });
   
       // Generar lista de días del mes
       const updateDaysInMonth = () => {
         if (!year.value || !month.value) return;
-        const daysInMonthMap = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31};
+        const daysInMonthMap = {
+          1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
+          7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31
+        };
         if (month.value === 2 && year.value % 4 === 0 && (year.value % 100 !== 0 || year.value % 400 === 0)) {
           daysInMonthMap[2] = 29;
         }
@@ -194,7 +196,7 @@
         selectedDay.value = 'Todos';
       };
   
-      // Obtener los años disponibles
+      // Obtener años disponibles
       const fetchAvailableYears = async () => {
         try {
           const response = await axios.get('/available-years');
@@ -202,6 +204,7 @@
           if (years.value.length > 0) {
             year.value = years.value.includes(currentYear) ? currentYear : years.value[0];
             updateDaysInMonth();
+            fetchPdvs();
             fetchData();
           }
         } catch (error) {
@@ -212,30 +215,99 @@
           if (error.response && error.response.status === 401) {
             router.push('/login');
           } else {
+            fetchPdvs();
             fetchData();
           }
         }
       };
   
-      // Obtener datos de utilidad diaria
+      // Obtener lista de PDVs
+      const fetchPdvs = async () => {
+        try {
+          const params = { year: year.value, month: month.value, status: status.value };
+          if (selectedDay.value !== 'Todos') params.day = selectedDay.value;
+          const response = await axios.get('/dashboard/product-profit', { params });
+          const data = response.data.data || [];
+          const pdvSet = new Set();
+          data.forEach(row => {
+            Object.keys(row.almacenes || {}).forEach(pdv => pdvSet.add(pdv));
+          });
+          pdvs.value = Array.from(pdvSet).sort();
+        } catch (error) {
+          console.error('Error fetching PDVs:', error);
+          pdvs.value = [];
+        }
+      };
+  
+      // Obtener datos de utilidad
       const fetchData = async () => {
         if (!year.value) return;
         try {
           const params = { year: year.value, month: month.value, status: status.value };
           if (selectedPDV.value !== 'Todos') params.pdv = selectedPDV.value;
           if (selectedDay.value !== 'Todos') params.day = selectedDay.value;
+          const response = await axios.get('/dashboard/product-profit', { params });
+          const rawData = response.data.data || [];
   
-          const response = await axios.get('/dashboard/daily-profit', { params });
-          dailyProfitData.value = response.data.data || [];
-          pdvs.value = response.data.pdvs || [];
-          totals.value = response.data.totals || {};
+          // Agrupar datos por día y PDV
+          const dataByDay = {};
+          const daysInMonthMap = {
+            1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
+            7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31
+          };
+          if (month.value === 2 && year.value % 4 === 0 && (year.value % 100 !== 0 || year.value % 400 === 0)) {
+            daysInMonthMap[2] = 29;
+          }
+          const numDays = daysInMonthMap[month.value] || 30;
+  
+          // Inicializar datos para cada día
+          for (let day = 1; day <= numDays; day++) {
+            const date = new Date(year.value, month.value - 1, day);
+            const dayName = date.toLocaleDateString('es-ES', { weekday: 'long' });
+            const formattedDate = `${dayName}, ${day.toString().padStart(2, '0')}/${month.value.toString().padStart(2, '0')}/${year.value}`;
+            dataByDay[day] = {
+              date: formattedDate,
+              pdvs: {},
+              total: { ventas: 0, costos: 0, produccion: 0, utilidad: 0 }
+            };
+            pdvs.value.forEach(pdv => {
+              dataByDay[day].pdvs[pdv] = { ventas: 0, costos: 0, produccion: 0, utilidad: 0 };
+            });
+          }
+  
+          // Procesar datos del endpoint
+          rawData.forEach(row => {
+            const almacenes = row.almacenes || {};
+            Object.entries(almacenes).forEach(([pdv, pdvData]) => {
+              // Asumir que los datos son del día especificado o distribuir uniformemente
+              const dayKey = selectedDay.value !== 'Todos' ? parseInt(selectedDay.value) : 1;
+              if (dataByDay[dayKey]) {
+                dataByDay[dayKey].pdvs[pdv] = dataByDay[dayKey].pdvs[pdv] || {
+                  ventas: 0, costos: 0, produccion: 0, utilidad: 0
+                };
+                dataByDay[dayKey].pdvs[pdv].ventas += pdvData.venta || 0;
+                dataByDay[dayKey].pdvs[pdv].costos += (row.costos * (pdvData.cantidad_vendida / row.cantidad_vendida)) || 0;
+                dataByDay[dayKey].pdvs[pdv].produccion += (row.produccion * (pdvData.cantidad_vendida / row.cantidad_vendida)) || 0;
+                dataByDay[dayKey].pdvs[pdv].utilidad += (row.utilidad * (pdvData.cantidad_vendida / row.cantidad_vendida)) || 0;
+              }
+            });
+          });
+  
+          // Calcular totales por día
+          Object.values(dataByDay).forEach(dayData => {
+            Object.entries(dayData.pdvs).forEach(([pdv, metrics]) => {
+              dayData.total.ventas += metrics.ventas;
+              dayData.total.costos += metrics.costos;
+              dayData.total.produccion += metrics.produccion;
+              dayData.total.utilidad += metrics.utilidad;
+            });
+          });
+  
+          dailyProfitData.value = Object.values(dataByDay).filter(dayData => dayData.total.utilidad > 0 || selectedDay.value !== 'Todos');
           updateFilteredData();
-          console.log('Datos recibidos:', { dailyProfitData: dailyProfitData.value, pdvs: pdvs.value, totals: totals.value });
         } catch (error) {
           console.error('Error fetching daily profit data:', error);
           dailyProfitData.value = [];
-          pdvs.value = [];
-          totals.value = {};
           filteredDailyProfitData.value = [];
           filteredPdvs.value = [];
           filteredTotals.value = {};
@@ -247,12 +319,14 @@
   
       // Actualizar datos filtrados
       const updateFilteredData = () => {
+        // Filtrar PDVs
         if (selectedPDV.value === 'Todos') {
           filteredPdvs.value = pdvs.value;
         } else {
           filteredPdvs.value = pdvs.value.filter(pdv => pdv === selectedPDV.value);
         }
   
+        // Filtrar días
         if (selectedDay.value === 'Todos') {
           filteredDailyProfitData.value = dailyProfitData.value;
         } else {
@@ -262,13 +336,14 @@
           filteredDailyProfitData.value = dailyProfitData.value.filter(row => row.date.includes(datePattern));
         }
   
+        // Calcular totales
         filteredTotals.value = { date: 'TOTALES' };
         filteredPdvs.value.forEach(pdv => {
           filteredTotals.value[pdv] = {
-            ventas: filteredDailyProfitData.value.reduce((sum, row) => sum + (row[pdv]?.ventas || 0), 0),
-            costos: filteredDailyProfitData.value.reduce((sum, row) => sum + (row[pdv]?.costos || 0), 0),
-            produccion: filteredDailyProfitData.value.reduce((sum, row) => sum + (row[pdv]?.produccion || 0), 0),
-            utilidad: filteredDailyProfitData.value.reduce((sum, row) => sum + (row[pdv]?.utilidad || 0), 0)
+            ventas: filteredDailyProfitData.value.reduce((sum, row) => sum + (row.pdvs[pdv]?.ventas || 0), 0),
+            costos: filteredDailyProfitData.value.reduce((sum, row) => sum + (row.pdvs[pdv]?.costos || 0), 0),
+            produccion: filteredDailyProfitData.value.reduce((sum, row) => sum + (row.pdvs[pdv]?.produccion || 0), 0),
+            utilidad: filteredDailyProfitData.value.reduce((sum, row) => sum + (row.pdvs[pdv]?.utilidad || 0), 0)
           };
         });
         filteredTotals.value.total = {
@@ -282,6 +357,7 @@
       // Actualizar días y obtener datos
       const updateDaysAndFetch = () => {
         updateDaysInMonth();
+        fetchPdvs();
         fetchData();
       };
   
@@ -291,22 +367,18 @@
       };
   
       // Gráfico de barras: Utilidad Total por PDV
-      const barChartData = computed(() => {
-        const data = {
-          labels: filteredPdvs.value,
-          datasets: [
-            {
-              label: 'Utilidad Total (COP)',
-              data: filteredPdvs.value.map(pdv => filteredTotals.value[pdv]?.utilidad || 0),
-              backgroundColor: 'rgba(54, 162, 235, 0.6)',
-              borderColor: 'rgba(54, 162, 235, 1)',
-              borderWidth: 1
-            }
-          ]
-        };
-        console.log('barChartData:', data);
-        return data;
-      });
+      const barChartData = computed(() => ({
+        labels: filteredPdvs.value,
+        datasets: [
+          {
+            label: 'Utilidad Total (COP)',
+            data: filteredPdvs.value.map(pdv => filteredTotals.value[pdv]?.utilidad || 0),
+            backgroundColor: 'rgba(54, 162, 235, 0.6)',
+            borderColor: 'rgba(54, 162, 235, 1)',
+            borderWidth: 1
+          }
+        ]
+      }));
   
       const barChartOptions = {
         responsive: true,
@@ -317,7 +389,7 @@
             title: { display: true, text: 'Utilidad (COP)' },
             ticks: {
               callback: function(value) {
-                return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(value);
+                return formatCurrency(value);
               }
             }
           },
@@ -330,10 +402,7 @@
           tooltip: {
             callbacks: {
               label: function(context) {
-                let label = context.dataset.label || '';
-                if (label) label += ': ';
-                label += new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(context.parsed.y);
-                return label;
+                return `${context.dataset.label}: ${formatCurrency(context.parsed.y)}`;
               }
             }
           },
@@ -342,9 +411,9 @@
             anchor: 'center',
             align: 'center',
             color: '#fff',
-            font: { size: 11, weight: 'bold' },
+            font: { size: 13, weight: 'bold' },
             formatter: function(value) {
-              return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(value);
+              return formatCurrency(value);
             }
           }
         }
@@ -362,10 +431,10 @@
         if (selectedPdv.value === 'total') {
           data = filteredDailyProfitData.value.map(row => row.total.utilidad);
         } else {
-          data = filteredDailyProfitData.value.map(row => row[selectedPdv.value]?.utilidad || 0);
+          data = filteredDailyProfitData.value.map(row => row.pdvs[selectedPdv.value]?.utilidad || 0);
         }
   
-        const chartData = {
+        return {
           labels: labels,
           datasets: [
             {
@@ -378,8 +447,6 @@
             }
           ]
         };
-        console.log('lineChartData:', chartData);
-        return chartData;
       });
   
       const lineChartOptions = {
@@ -400,7 +467,7 @@
             title: { display: true, text: 'Utilidad (COP)' },
             ticks: {
               callback: function(value) {
-                return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(value);
+                return formatCurrency(value);
               }
             }
           }
@@ -410,15 +477,60 @@
           tooltip: {
             callbacks: {
               label: function(context) {
-                let label = context.dataset.label || '';
-                if (label) label += ': ';
-                label += new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(context.parsed.y);
-                return label;
+                return `${context.dataset.label}: ${formatCurrency(context.parsed.y)}`;
               }
             }
           },
           datalabels: { display: false }
         }
+      };
+  
+      // Exportar a Excel
+      const exportToExcel = () => {
+        const data = filteredDailyProfitData.value.map(row => {
+          const rowData = { Fecha: row.date };
+          filteredPdvs.value.forEach(pdv => {
+            rowData[`${pdv} - Ventas`] = row.pdvs[pdv].ventas;
+            rowData[`${pdv} - Costos`] = row.pdvs[pdv].costos;
+            rowData[`${pdv} - Producción`] = row.pdvs[pdv].produccion;
+            rowData[`${pdv} - Utilidad`] = row.pdvs[pdv].utilidad;
+          });
+          rowData['Total - Ventas'] = row.total.ventas;
+          rowData['Total - Costos'] = row.total.costos;
+          rowData['Total - Producción'] = row.total.produccion;
+          rowData['Total - Utilidad'] = row.total.utilidad;
+          return rowData;
+        });
+  
+        data.push({
+          Fecha: filteredTotals.value.date,
+          ...Object.fromEntries(
+            filteredPdvs.value.flatMap(pdv => [
+              [`${pdv} - Ventas`, filteredTotals.value[pdv].ventas],
+              [`${pdv} - Costos`, filteredTotals.value[pdv].costos],
+              [`${pdv} - Producción`, filteredTotals.value[pdv].produccion],
+              [`${pdv} - Utilidad`, filteredTotals.value[pdv].utilidad]
+            ])
+          ),
+          'Total - Ventas': filteredTotals.value.total.ventas,
+          'Total - Costos': filteredTotals.value.total.costos,
+          'Total - Producción': filteredTotals.value.total.produccion,
+          'Total - Utilidad': filteredTotals.value.total.utilidad
+        });
+  
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Utilidad Diaria');
+        XLSX.writeFile(wb, `Utilidad_Diaria_${year.value}_${month.value}${selectedDay.value !== 'Todos' ? `_Dia${selectedDay.value}` : ''}.xlsx`);
+      };
+  
+      // Descargar gráficos
+      const downloadChart = async (chartId) => {
+        const canvas = document.getElementById(chartId);
+        const link = document.createElement('a');
+        link.href = await html2canvas(canvas).then(canvas => canvas.toDataURL('image/png'));
+        link.download = `${chartId}_${year.value}_${month.value}${selectedDay.value !== 'Todos' ? `_Dia${selectedDay.value}` : ''}.png`;
+        link.click();
       };
   
       // Cargar años disponibles
@@ -457,7 +569,9 @@
         lineChartOptions,
         fetchData,
         updateDaysAndFetch,
-        formatCurrency
+        formatCurrency,
+        exportToExcel,
+        downloadChart
       };
     }
   };
@@ -473,6 +587,26 @@
     display: flex;
     gap: 15px;
     align-items: center;
+    flex-wrap: wrap;
+  }
+  
+  .actions {
+    margin-bottom: 20px;
+    display: flex;
+    gap: 10px;
+  }
+  
+  .actions button {
+    padding: 8px 16px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  
+  .actions button:hover {
+    background-color: #45a049;
   }
   
   label {
@@ -489,7 +623,7 @@
   .table-container {
     max-width: 100%;
     overflow-x: auto;
-    margin-top: 120px;
+    margin-top: 40px;
   }
   
   .profit-table {
@@ -532,11 +666,11 @@
   }
   
   .charts-container {
-    margin-bottom: 70px;
+    margin-bottom: 40px;
   }
   
   .chart-wrapper {
-    margin-bottom: 40px;
+    margin-bottom: 60px;
     height: 400px;
   }
   
