@@ -6134,6 +6134,7 @@ def consultar_kardex():
         if not codigo_producto or not fecha_inicio or not fecha_fin:
             return jsonify({'message': 'Debe proporcionar el código del producto y el rango de fechas'}), 400
 
+        # Convertir fechas a datetime en hora local de Colombia (naive, como en la base de datos)
         try:
             fecha_inicio_dt = datetime.strptime(fecha_inicio, '%Y-%m-%d')
             fecha_fin_dt = datetime.strptime(fecha_fin, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
@@ -6151,18 +6152,6 @@ def consultar_kardex():
             bodegas_ids = [b.id for b in bodegas_query]
             if not bodegas_ids:
                 return jsonify({'message': 'Ninguna de las bodegas especificadas fue encontrada'}), 404
-
-        # Calcular CPP Global (promedio de costo_unitario de entradas)
-        cpp_global_query = db.session.query(db.func.avg(Kardex.costo_unitario)).filter(
-            Kardex.producto_id == producto.id,
-            Kardex.idcliente == idcliente,
-            Kardex.tipo_movimiento == 'ENTRADA'
-        )
-        if bodegas_ids:
-            cpp_global_query = cpp_global_query.filter(
-                Kardex.bodega_destino_id.in_(bodegas_ids)
-            )
-        cpp_global = cpp_global_query.scalar() or 0.0
 
         # Calcular saldo inicial
         saldo_bodegas = {}
@@ -6193,6 +6182,7 @@ def consultar_kardex():
                     saldo_bodegas[movimiento.bodega_destino_id] = saldo_bodegas.get(movimiento.bodega_destino_id, 0) + movimiento.cantidad
                     saldo_costo_total_bodegas[movimiento.bodega_destino_id] = saldo_costo_total_bodegas.get(movimiento.bodega_destino_id, 0) + (movimiento.costo_total or 0)
 
+        # Preparar saldos iniciales por bodega
         saldo_bodegas_nombres = {}
         total_saldo_global = 0
         total_costo_global = 0
@@ -6208,6 +6198,8 @@ def consultar_kardex():
                 }
                 total_saldo_global += saldo
                 total_costo_global += costo_total
+
+        saldo_costo_unitario_global = total_costo_global / total_saldo_global if total_saldo_global > 0 else 0.0
 
         # Consultar movimientos en el rango
         movimientos_query = Kardex.query.filter(
@@ -6225,6 +6217,8 @@ def consultar_kardex():
         kardex = []
         saldo_actual = saldo_bodegas.copy()
         saldo_costo_total_actual = saldo_costo_total_bodegas.copy()
+        total_saldo_global_actual = total_saldo_global
+        total_costo_global_actual = total_costo_global
 
         # Registrar saldos iniciales
         for bodega_nombre, saldos in saldo_bodegas_nombres.items():
@@ -6238,7 +6232,7 @@ def consultar_kardex():
                 'costo_total': saldos['costo_total'],
                 'saldo_costo_unitario': saldos['costo_unitario'],
                 'saldo_costo_total': saldos['costo_total'],
-                'saldo_costo_unitario_global': float(cpp_global),
+                'saldo_costo_unitario_global': saldo_costo_unitario_global,
                 'descripcion': 'Saldo inicial antes del rango de consulta'
             })
 
@@ -6252,11 +6246,14 @@ def consultar_kardex():
                 saldo_actual[movimiento.bodega_destino_id] = saldo_antes + movimiento.cantidad
                 costo_total_movimiento = movimiento.costo_total or (movimiento.cantidad * movimiento.costo_unitario)
                 saldo_costo_total_actual[movimiento.bodega_destino_id] = costo_total_antes + costo_total_movimiento
+                total_saldo_global_actual += movimiento.cantidad
+                total_costo_global_actual += costo_total_movimiento
 
                 saldo_costo_unitario_bodega = (
                     saldo_costo_total_actual[movimiento.bodega_destino_id] /
                     saldo_actual[movimiento.bodega_destino_id] if saldo_actual[movimiento.bodega_destino_id] > 0 else 0.0
                 )
+                saldo_costo_unitario_global = total_costo_global_actual / total_saldo_global_actual if total_saldo_global_actual > 0 else 0.0
 
                 kardex.append({
                     'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
@@ -6268,7 +6265,7 @@ def consultar_kardex():
                     'costo_total': float(costo_total_movimiento),
                     'saldo_costo_unitario': float(saldo_costo_unitario_bodega),
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
-                    'saldo_costo_unitario_global': float(cpp_global),
+                    'saldo_costo_unitario_global': float(saldo_costo_unitario_global),
                     'descripcion': movimiento.referencia or 'Entrada registrada'
                 })
 
@@ -6276,17 +6273,21 @@ def consultar_kardex():
                 bodega_origen = movimiento.bodega_origen.nombre if movimiento.bodega_origen else None
                 saldo_antes = saldo_actual.get(movimiento.bodega_origen_id, 0)
                 costo_total_antes = saldo_costo_total_actual.get(movimiento.bodega_origen_id, 0)
-                costo_unitario_antes = costo_total_antes / saldo_antes if saldo_antes > 0 else 0.0  # Cambiado para usar 0.0 si saldo_antes <= 0
+                costo_unitario_antes = costo_total_antes / saldo_antes if saldo_antes > 0 else 0.0
 
                 saldo_actual[movimiento.bodega_origen_id] = saldo_antes - movimiento.cantidad
                 costo_total_movimiento = movimiento.costo_total or (movimiento.cantidad * (movimiento.costo_unitario or costo_unitario_antes))
                 saldo_costo_total_actual[movimiento.bodega_origen_id] = costo_total_antes - costo_total_movimiento
+                total_saldo_global_actual -= movimiento.cantidad
+                total_costo_global_actual -= costo_total_movimiento
 
                 saldo_costo_unitario_bodega = (
                     saldo_costo_total_actual[movimiento.bodega_origen_id] /
-                    saldo_actual[movimiento.bodega_origen_id] if saldo_actual[movimiento.bodega_origen_id] > 0 else 0.0  # Cambiado para usar 0.0 si saldo <= 0
+                    saldo_actual[movimiento.bodega_origen_id] if saldo_actual[movimiento.bodega_origen_id] > 0 else costo_unitario_antes
                 )
-                saldo_costo_total = float(saldo_costo_total_actual[movimiento.bodega_origen_id])  # Eliminamos la condición para asegurar que siempre sea un número
+                saldo_costo_unitario_global = total_costo_global_actual / total_saldo_global_actual if total_saldo_global_actual > 0 else 0.0
+
+                saldo_costo_total = float(saldo_costo_total_actual[movimiento.bodega_origen_id]) if saldo_actual[movimiento.bodega_origen_id] > 0 else 0.0
 
                 kardex.append({
                     'fecha': movimiento.fecha.strftime('%Y-%m-%d %H:%M:%S'),
@@ -6297,8 +6298,8 @@ def consultar_kardex():
                     'costo_unitario': float(movimiento.costo_unitario or costo_unitario_antes),
                     'costo_total': float(costo_total_movimiento),
                     'saldo_costo_unitario': float(saldo_costo_unitario_bodega),
-                    'saldo_costo_total': float(saldo_costo_total),  # Aseguramos que sea un número
-                    'saldo_costo_unitario_global': float(cpp_global),
+                    'saldo_costo_total': saldo_costo_total,
+                    'saldo_costo_unitario_global': float(saldo_costo_unitario_global),
                     'descripcion': movimiento.referencia or 'Salida registrada'
                 })
 
@@ -6326,7 +6327,7 @@ def consultar_kardex():
                     'costo_total': float(costo_total_traslado),
                     'saldo_costo_unitario': float(saldo_costo_unitario_origen),
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_origen_id]),
-                    'saldo_costo_unitario_global': float(cpp_global),
+                    'saldo_costo_unitario_global': float(saldo_costo_unitario_global),
                     'descripcion': f'Traslado con referencia {movimiento.referencia}. Salida de Mercancía de {bodega_origen}'
                 })
 
@@ -6352,7 +6353,7 @@ def consultar_kardex():
                     'costo_total': float(costo_total_traslado),
                     'saldo_costo_unitario': float(saldo_costo_unitario_destino),
                     'saldo_costo_total': float(saldo_costo_total_actual[movimiento.bodega_destino_id]),
-                    'saldo_costo_unitario_global': float(cpp_global),
+                    'saldo_costo_unitario_global': float(saldo_costo_unitario_global),
                     'descripcion': f'Traslado con referencia {movimiento.referencia}. Entrada de Mercancía a {bodega_destino}'
                 })
 
