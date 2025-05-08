@@ -9876,7 +9876,7 @@ def get_daily_profit():
         pdv_mapping = {row[0]: row[1] for row in pdv_data}
         pdv_mapping['ACA - Caja Portal'] = 'Portal del Prado'
         pdv_mapping['AQA - Caja la Castellana'] = 'La Castellana'
-        all_pdvs = [row[0] for row in pdv_data]
+        all_pdvs = [row[1] for row in pdv_data if row[0] != 'PP - Planta Principal']
         logger.debug(f"PDVs obtenidos: {all_pdvs}, Mapeo: {pdv_mapping}")
 
         # Consultar ventas diarias por almacén
@@ -9912,19 +9912,25 @@ def get_daily_profit():
         # Estructurar datos de ventas
         sales_by_date_almacen = {}
         for fecha, almacen, producto, cantidad_vendida, venta in sales_data:
-            key = (fecha, almacen)
-            if key not in sales_by_date_almacen:
-                sales_by_date_almacen[key] = {'productos': {}, 'venta_total': 0.0}
-            sales_by_date_almacen[key]['productos'][producto] = {
+            date_str = fecha.strftime('%d/%m/%Y')
+            if date_str not in sales_by_date_almacen:
+                sales_by_date_almacen[date_str] = {'pdvs': {}, 'productos': {}}
+            if almacen not in sales_by_date_almacen[date_str]['pdvs']:
+                sales_by_date_almacen[date_str]['pdvs'][almacen] = {
+                    'ventas': 0.0, 'costos': 0.0, 'produccion': 0.0, 'utilidad': 0.0
+                }
+            if producto not in sales_by_date_almacen[date_str]['productos']:
+                sales_by_date_almacen[date_str]['productos'][producto] = {}
+            sales_by_date_almacen[date_str]['pdvs'][almacen]['ventas'] += float(venta)
+            sales_by_date_almacen[date_str]['productos'][producto][almacen] = {
                 'cantidad_vendida': float(cantidad_vendida),
                 'venta': float(venta)
             }
-            sales_by_date_almacen[key]['venta_total'] += float(venta)
 
         # Mapear descripciones a producto_id
         producto_mapping = {}
         all_productos = set()
-        for key, data in sales_by_date_almacen.items():
+        for date_str, data in sales_by_date_almacen.items():
             all_productos.update(data['productos'].keys())
         for desc in all_productos:
             producto = Producto.query.filter(
@@ -9980,128 +9986,136 @@ def get_daily_profit():
         # Estructurar consumo en compuestos
         composite_consumption = {}
         for fecha, almacen, producto_base, cantidad_consumida in composite_data:
-            key = (fecha, almacen)
-            if key not in composite_consumption:
-                composite_consumption[key] = {}
-            composite_consumption[key][producto_base] = float(cantidad_consumida)
+            date_str = fecha.strftime('%d/%m/%Y')
+            if date_str not in composite_consumption:
+                composite_consumption[date_str] = {}
+            if almacen not in composite_consumption[date_str]:
+                composite_consumption[date_str][almacen] = {}
+            composite_consumption[date_str][almacen][producto_base] = float(cantidad_consumida)
 
         # Calcular costos y utilidad
         result = []
-        for (fecha, almacen), data in sales_by_date_almacen.items():
-            costo_total = 0.0
-            costo_produccion = 0.0
-            venta_total = data['venta_total']
+        for date_str, data in sales_by_date_almacen.items():
+            row = {'date': date_str}
+            total = {'ventas': 0.0, 'costos': 0.0, 'produccion': 0.0, 'utilidad': 0.0}
+            pdvs = data['pdvs']
             productos = data['productos']
-            cantidades_consumidas = composite_consumption.get((fecha, almacen), {})
+            cantidades_consumidas = composite_consumption.get(date_str, {})
 
-            # Obtener bodega correspondiente al almacén
-            bodega = Bodega.query.filter(
-                Bodega.nombre == almacen,
-                Bodega.idcliente == id_cliente
-            ).first()
-            bodega_id = bodega.id if bodega and (not planta_principal_id or bodega.id != planta_principal_id) else None
-            if not bodega_id:
-                logger.warning(f"Bodega {almacen} no encontrada o es Planta Principal para fecha {fecha}")
-                continue
+            for almacen in pdvs:
+                if almacen not in all_pdvs:
+                    continue
+                pdvs[almacen]['costos'] = 0.0
+                pdvs[almacen]['produccion'] = 0.0
+                bodega = Bodega.query.filter(
+                    Bodega.nombre == almacen,
+                    Bodega.idcliente == id_cliente
+                ).first()
+                bodega_id = bodega.id if bodega and (not planta_principal_id or bodega.id != planta_principal_id) else None
+                if not bodega_id:
+                    logger.warning(f"Bodega {almacen} no encontrada o es Planta Principal para fecha {date_str}")
+                    continue
 
-            # Procesar cada producto
-            for producto, info in productos.items():
-                producto_info = producto_mapping.get(producto, {'id': None, 'es_compuesto': False})
-                producto_id = producto_info['id']
-                es_compuesto = producto_info['es_compuesto']
-                cantidad_vendida = info['cantidad_vendida']
-                venta = info['venta']
+                # Procesar cada producto
+                for producto, info in productos.items():
+                    producto_info = producto_mapping.get(producto, {'id': None, 'es_compuesto': False})
+                    producto_id = producto_info['id']
+                    es_compuesto = producto_info['es_compuesto']
+                    cantidad_vendida = info.get(almacen, {}).get('cantidad_vendida', 0.0)
 
-                # Incluir consumo en productos compuestos para productos base
-                cantidad_total = cantidad_vendida
-                cantidad_consumida = cantidades_consumidas.get(producto, 0.0)
-                cantidad_total += cantidad_consumida
-                logger.debug(f"Producto {producto} en {almacen} el {fecha}: ventas={cantidad_vendida}, consumo={cantidad_consumida}, total={cantidad_total}")
+                    # Incluir consumo en productos compuestos
+                    cantidad_consumida = cantidades_consumidas.get(almacen, {}).get(producto, 0.0)
+                    cantidad_total = cantidad_vendida + cantidad_consumida
+                    logger.debug(f"Producto {producto} en {almacen} el {date_str}: ventas={cantidad_vendida}, consumo={cantidad_consumida}, total={cantidad_total}")
 
-                if producto_id:
-                    # Costos para productos no compuestos (desde kardex)
-                    if not es_compuesto:
-                        kardex_query = """
-                            SELECT SUM(k.costo_total) as costo_total, SUM(k.cantidad) as cantidad
-                            FROM kardex k
-                            WHERE k.producto_id = %s
-                            AND k.idcliente = %s
-                            AND k.tipo_movimiento = 'SALIDA'
-                            AND k.bodega_origen_id = %s
-                            AND k.fecha::date = %s
-                        """
-                        kardex_params = [producto_id, id_cliente, bodega_id, fecha]
-                        cursor.execute(kardex_query, kardex_params)
-                        kardex_result = cursor.fetchone()
-                        costo_producto = float(kardex_result[0] or 0.0)
-                        cantidad_kardex = float(kardex_result[1] or 0.0)
+                    if producto_id:
+                        # Costos para productos no compuestos (desde kardex)
+                        if not es_compuesto:
+                            kardex_query = """
+                                SELECT SUM(k.costo_total) as costo_total, SUM(k.cantidad) as cantidad
+                                FROM kardex k
+                                WHERE k.producto_id = %s
+                                AND k.idcliente = %s
+                                AND k.tipo_movimiento = 'SALIDA'
+                                AND k.bodega_origen_id = %s
+                                AND k.fecha::date = %s
+                            """
+                            kardex_date = datetime.strptime(date_str, '%d/%m/%Y').date()
+                            kardex_params = [producto_id, id_cliente, bodega_id, kardex_date]
+                            cursor.execute(kardex_query, kardex_params)
+                            kardex_result = cursor.fetchone()
+                            costo_producto = float(kardex_result[0] or 0.0)
+                            cantidad_kardex = float(kardex_result[1] or 0.0)
 
-                        if abs(cantidad_kardex - cantidad_total) > 0.01:
-                            logger.warning(
-                                f"Discrepancia en {producto} para {almacen} el {fecha}: "
-                                f"vendido+consumido={cantidad_total}, kardex={cantidad_kardex}"
-                            )
-                            if cantidad_kardex > 0:
-                                costo_unitario = costo_producto / cantidad_kardex
-                                costo_producto = costo_unitario * cantidad_total
+                            if abs(cantidad_kardex - cantidad_total) > 0.01:
+                                logger.warning(
+                                    f"Discrepancia en {producto} para {almacen} el {date_str}: "
+                                    f"vendido+consumido={cantidad_total}, kardex={cantidad_kardex}"
+                                )
+                                if cantidad_kardex > 0:
+                                    costo_unitario = costo_producto / cantidad_kardex
+                                    costo_producto = costo_unitario * cantidad_total
+                                else:
+                                    costo_producto = 0.0
+                            pdvs[almacen]['costos'] += costo_producto
+
+                        # Costos de producción para productos compuestos
+                        if es_compuesto:
+                            prod_query = """
+                                SELECT SUM(op.costo_total) as costo_total, SUM(op.cantidad_paquetes) as cantidad
+                                FROM ordenes_produccion op
+                                WHERE op.producto_compuesto_id = %s
+                                AND op.idcliente = %s
+                                AND op.estado = 'Finalizada'
+                                AND op.fecha_finalizacion::date = %s
+                                AND op.bodega_produccion_id = %s
+                            """
+                            prod_date = datetime.strptime(date_str, '%d/%m/%Y').date()
+                            prod_params = [producto_id, id_cliente, prod_date, bodega_id]
+                            cursor.execute(prod_query, prod_params)
+                            prod_result = cursor.fetchone()
+                            costo_total_prod = float(prod_result[0] or 0.0)
+                            cantidad_produccion = float(prod_result[1] or 0.0)
+
+                            if cantidad_produccion > 0:
+                                costo_unitario_prod = costo_total_prod / cantidad_produccion
+                                costo_producto = costo_unitario_prod * cantidad_vendida
+                                pdvs[almacen]['produccion'] += costo_producto
+                                logger.debug(
+                                    f"Producto {producto}: costo_unitario_prod={costo_unitario_prod}, "
+                                    f"costo_produccion={costo_producto}, cantidad_vendida={cantidad_vendida}"
+                                )
                             else:
-                                costo_producto = 0.0
-                        costo_total += costo_producto
+                                logger.warning(f"No se encontraron órdenes de producción para {producto} en {almacen} el {date_str}")
 
-                    # Costos de producción para productos compuestos
-                    if es_compuesto:
-                        prod_query = """
-                            SELECT SUM(op.costo_total) as costo_total, SUM(op.cantidad_paquetes) as cantidad
-                            FROM ordenes_produccion op
-                            WHERE op.producto_compuesto_id = %s
-                            AND op.idcliente = %s
-                            AND op.estado = 'Finalizada'
-                            AND op.fecha_finalizacion::date = %s
-                            AND op.bodega_produccion_id = %s
-                        """
-                        prod_params = [producto_id, id_cliente, fecha, bodega_id]
-                        cursor.execute(prod_query, prod_params)
-                        prod_result = cursor.fetchone()
-                        costo_total_prod = float(prod_result[0] or 0.0)
-                        cantidad_produccion = float(prod_result[1] or 0.0)
+                # Calcular utilidad por PDV
+                pdvs[almacen]['utilidad'] = pdvs[almacen]['ventas'] - pdvs[almacen]['costos'] - pdvs[almacen]['produccion']
+                row[almacen] = {
+                    'ventas': round(pdvs[almacen]['ventas'], 2),
+                    'costos': round(pdvs[almacen]['costos'], 2),
+                    'produccion': round(pdvs[almacen]['produccion'], 2),
+                    'utilidad': round(pdvs[almacen]['utilidad'], 2)
+                }
+                total['ventas'] += pdvs[almacen]['ventas']
+                total['costos'] += pdvs[almacen]['costos']
+                total['produccion'] += pdvs[almacen]['produccion']
+                total['utilidad'] += pdvs[almacen]['utilidad']
 
-                        if cantidad_produccion > 0:
-                            costo_unitario_prod = costo_total_prod / cantidad_produccion
-                            costo_producto = costo_unitario_prod * cantidad_vendida
-                            costo_produccion += costo_producto
-                            logger.debug(
-                                f"Producto {producto}: costo_unitario_prod={costo_unitario_prod}, "
-                                f"costo_produccion={costo_producto}, cantidad_vendida={cantidad_vendida}"
-                            )
-                        else:
-                            logger.warning(f"No se encontraron órdenes de producción para {producto} en {almacen} el {fecha}")
-
-            utilidad = venta_total - costo_total - costo_produccion
-            margen = (utilidad / venta_total * 100) if venta_total > 0 else 0.0
-
-            result.append({
-                'fecha': fecha.strftime('%Y-%m-%d'),
-                'almacen': almacen,
-                'ventas': round(venta_total, 2),
-                'costos': round(costo_total, 2),
-                'produccion': round(costo_produccion, 2),
-                'utilidad': round(utilidad, 2),
-                'margen': round(margen, 2),
-                'productos': [
-                    {
-                        'descripcion': producto,
-                        'cantidad_vendida': round(info['cantidad_vendida'], 2),
-                        'cantidad_consumida_en_compuestos': round(cantidades_consumidas.get(producto, 0.0), 2),
-                        'ventas': round(info['venta'], 2)
-                    } for producto, info in productos.items()
-                ]
-            })
+            # Agregar total por fecha
+            row['total'] = {
+                'ventas': round(total['ventas'], 2),
+                'costos': round(total['costos'], 2),
+                'produccion': round(total['produccion'], 2),
+                'utilidad': round(total['utilidad'], 2)
+            }
+            result.append(row)
 
         response = {
             'year': year,
             'month': month,
             'day': day,
-            'data': result
+            'data': result,
+            'pdvs': all_pdvs
         }
         logger.info(f"Respuesta generada: {len(result)} registros")
         conn.close()
