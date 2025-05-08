@@ -68,12 +68,16 @@
           <tbody>
             <tr v-for="row in filteredDailyProfitData" :key="row.date">
               <td>{{ row.date }}</td>
-              <td v-for="pdv in filteredPdvs" :key="pdv">{{ formatCurrency(row[pdv].utilidad) }}</td>
+              <td v-for="pdv in filteredPdvs" :key="pdv">
+                {{ row[pdv] ? formatCurrency(row[pdv].utilidad) : '-' }}
+              </td>
               <td>{{ formatCurrency(row.total.utilidad) }}</td>
             </tr>
             <tr class="total-row" v-if="filteredDailyProfitData.length > 0">
               <td>{{ filteredTotals.date }}</td>
-              <td v-for="pdv in filteredPdvs" :key="pdv">{{ formatCurrency(filteredTotals[pdv].utilidad) }}</td>
+              <td v-for="pdv in filteredPdvs" :key="pdv">
+                {{ filteredTotals[pdv] ? formatCurrency(filteredTotals[pdv].utilidad) : '-' }}
+              </td>
               <td>{{ formatCurrency(filteredTotals.total.utilidad) }}</td>
             </tr>
           </tbody>
@@ -155,7 +159,7 @@
       // Computed para determinar si no hay datos
       const noData = computed(() => {
         const result = filteredDailyProfitData.value.length === 0 ||
-                      filteredDailyProfitData.value.every(row => row.total.utilidad === 0);
+                      filteredDailyProfitData.value.every(row => !row.total || row.total.utilidad === 0);
         console.log('noData:', result, 'filteredDailyProfitData:', filteredDailyProfitData.value);
         return result;
       });
@@ -221,10 +225,20 @@
   
       // Actualizar datos filtrados
       const updateFilteredData = () => {
+        // Filtrar PDVs con datos
+        const pdvsWithData = new Set();
+        dailyProfitData.value.forEach(row => {
+          Object.keys(row).forEach(key => {
+            if (key !== 'date' && key !== 'total' && pdvs.value.includes(key)) {
+              pdvsWithData.add(key);
+            }
+          });
+        });
+  
         if (selectedPDV.value === 'Todos') {
-          filteredPdvs.value = pdvs.value;
+          filteredPdvs.value = pdvs.value.filter(pdv => pdvsWithData.has(pdv));
         } else {
-          filteredPdvs.value = pdvs.value.filter(pdv => pdv === selectedPDV.value);
+          filteredPdvs.value = pdvs.value.filter(pdv => pdv === selectedPDV.value && pdvsWithData.has(pdv));
         }
   
         if (selectedDay.value === 'Todos') {
@@ -233,7 +247,10 @@
           const dayStr = selectedDay.value.toString().padStart(2, '0');
           const monthStr = month.value.toString().padStart(2, '0');
           const datePattern = `${dayStr}/${monthStr}/${year.value}`;
-          filteredDailyProfitData.value = dailyProfitData.value.filter(row => row.date.includes(datePattern));
+          filteredDailyProfitData.value = dailyProfitData.value.filter(row => {
+            const dateStr = row.date.includes(', ') ? row.date.split(', ')[1] : row.date;
+            return dateStr.includes(datePattern);
+          });
         }
   
         filteredTotals.value = { date: 'TOTALES' };
@@ -251,12 +268,6 @@
           produccion: filteredDailyProfitData.value.reduce((sum, row) => sum + (row.total?.produccion || 0), 0),
           utilidad: filteredDailyProfitData.value.reduce((sum, row) => sum + (row.total?.utilidad || 0), 0)
         };
-      };
-  
-      // Actualizar días y obtener datos
-      const updateDaysAndFetch = () => {
-        updateDaysInMonth();
-        fetchData();
       };
   
       // Formatear moneda
@@ -333,7 +344,7 @@
       // Datos para el gráfico de líneas
       const lineChartData = computed(() => {
         const labels = filteredDailyProfitData.value.map(row => {
-          const dateStr = row.date.split(', ')[1];
+          const dateStr = row.date.includes(', ') ? row.date.split(', ')[1] : row.date;
           const [day, month, year] = dateStr.split('/');
           return `${year}-${month}-${day}`;
         });
@@ -342,7 +353,7 @@
         if (selectedPdv.value === 'total') {
           data = filteredDailyProfitData.value.map(row => row.total.utilidad);
         } else {
-          data = filteredDailyProfitData.value.map(row => row[selectedPdv.value]?.utilidad || 0);
+          data = filteredDailyProfitData.value.map(row => (row[selectedPdv.value]?.utilidad || 0));
         }
   
         const chartData = {
