@@ -1,6 +1,6 @@
 <template>
     <div class="daily-profit">
-      <h1>Utilidad Diaria por PDV - {{ months[month - 1].name }} {{ year }}</h1>
+      <h1>Utilidad Diaria por PDV - {{ monthName }} {{ year }}</h1>
       <div class="filters">
         <label>Año:</label>
         <select v-model="year" @change="fetchData">
@@ -156,6 +156,12 @@
       const filteredTotals = ref({});
       const selectedPdv = ref('total');
   
+      // Computed para el nombre del mes
+      const monthName = computed(() => {
+        const selectedMonth = months.value.find(m => m.num === month.value);
+        return selectedMonth ? selectedMonth.name : 'Mes';
+      });
+  
       // Computed para determinar si no hay datos
       const noData = computed(() => {
         const result = filteredDailyProfitData.value.length === 0 ||
@@ -167,6 +173,7 @@
       // Generar lista de días del mes
       const updateDaysInMonth = () => {
         if (!year.value || !month.value) return;
+        console.log('Actualizando días para:', { year: year.value, month: month.value });
         const daysInMonthMap = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31};
         if (month.value === 2 && year.value % 4 === 0 && (year.value % 100 !== 0 || year.value % 400 === 0)) {
           daysInMonthMap[2] = 29;
@@ -174,6 +181,12 @@
         const numDays = daysInMonthMap[month.value] || 30;
         daysInMonth.value = Array.from({ length: numDays }, (_, i) => i + 1);
         selectedDay.value = 'Todos';
+      };
+  
+      // Actualizar días y obtener datos
+      const updateDaysAndFetch = () => {
+        updateDaysInMonth();
+        fetchData();
       };
   
       // Obtener los años disponibles
@@ -414,6 +427,7 @@
   
       // Cargar años al montar el componente
       onMounted(() => {
+        console.log('Montando componente, estado inicial:', { month: month.value, months: months.value });
         if (store.state.auth.token) {
           fetchAvailableYears();
         } else {
@@ -426,11 +440,17 @@
         console.log('PDV seleccionado cambiado a:', selectedPdv.value);
       });
   
+      // Vigilar cambios en month para depuración
+      watch(month, (newMonth) => {
+        console.log('Month cambiado a:', newMonth);
+      });
+  
       return {
         year,
         years,
         month,
         months,
+        monthName,
         status,
         selectedPDV,
         selectedDay,
