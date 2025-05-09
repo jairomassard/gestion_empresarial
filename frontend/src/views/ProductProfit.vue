@@ -536,7 +536,7 @@
   .table-container {
     max-width: 100%;
     overflow-x: auto;
-    margin-top: 40px;
+    margin-top: 150px;
   }
   
   .profit-table {
@@ -579,7 +579,7 @@
   }
   
   .chart-wrapper {
-    margin-bottom: 60px;
+    margin-bottom: 120px;
     height: 400px;
   }
   
