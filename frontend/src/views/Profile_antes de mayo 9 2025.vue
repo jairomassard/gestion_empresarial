@@ -29,19 +29,11 @@
                 </label>
               </div>
               <div v-if="seccion.subsecciones" class="subsecciones">
-                <div
-                  v-for="subseccion in filteredSubsecciones(seccion.subsecciones)"
-                  :key="subseccion.name"
-                  class="subseccion"
-                >
+                <div v-for="subseccion in seccion.subsecciones" :key="subseccion.name" class="subseccion">
                   <h5>{{ subseccion.displayName }}</h5>
                   <div v-for="permiso in subseccion.permisos" :key="permiso" class="checkbox-item">
                     <label>
-                      <input
-                        type="checkbox"
-                        :value="permiso"
-                        v-model="permisos[`${seccion.name}_${subseccion.name}`]"
-                      />
+                      <input type="checkbox" :value="permiso" v-model="permisos[`${seccion.name}_${subseccion.name}`]" />
                       {{ permiso }}
                     </label>
                   </div>
@@ -82,7 +74,7 @@
 
 <script>
 import axios from '@/api/axios';
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useStore } from 'vuex';
 
 export default {
@@ -93,10 +85,6 @@ export default {
     const perfiles = ref([]);
     const idcliente = ref('');
     const perfil_nombre = ref('');
-    const configuraciones = ref({
-      sync_analisis_inventario: false,
-      sync_analisis_produccion: false,
-    });
     const permisos = ref({
       dashboard: [],
       cargue: [],
@@ -112,8 +100,6 @@ export default {
       dashboard_ventas_medio_pago: [],
       dashboard_ventas_producto: [],
       dashboard_ventas_asesor: [],
-      dashboard_daily_profit: [],
-      dashboard_product_profit: [],
       cargue_ventas_diarias: [],
       cargue_arqueo: [],
       cargue_venta_mensual_historica: [],
@@ -122,7 +108,6 @@ export default {
       parametrizacion_perfiles: [],
       parametrizacion_usuarios: [],
       parametrizacion_cutoff: [],
-      parametrizacion_sync_config: [],
       inventario_consulta_inventario: [],
       inventario_consulta: [],
       inventario_kardex: [],
@@ -157,8 +142,6 @@ export default {
           { name: 'ventas_medio_pago', displayName: 'Ventas por Medio de Pago', permisos: ['ver'] },
           { name: 'ventas_producto', displayName: 'Ventas por Producto', permisos: ['ver'] },
           { name: 'ventas_asesor', displayName: 'Ventas por Asesor', permisos: ['ver'] },
-          { name: 'daily_profit', displayName: 'Utilidad Diaria', permisos: ['ver'] },
-          { name: 'product_profit', displayName: 'Utilidad por Producto', permisos: ['ver'] },
         ],
       },
       {
@@ -222,45 +205,6 @@ export default {
       },
     ];
 
-    const filteredSubsecciones = (subsecciones) => {
-      const isSyncEnabled =
-        configuraciones.value.sync_analisis_inventario ||
-        configuraciones.value.sync_analisis_produccion;
-      return subsecciones.filter((subseccion) => {
-        if (['daily_profit', 'product_profit'].includes(subseccion.name)) {
-          return isSyncEnabled;
-        }
-        return true;
-      });
-    };
-
-    const fetchConfiguraciones = async (clienteId) => {
-      if (!clienteId) {
-        configuraciones.value = {
-          sync_analisis_inventario: false,
-          sync_analisis_produccion: false,
-        };
-        return;
-      }
-      try {
-        const token = store.state.auth.token;
-        if (!token) throw new Error('No se encontró token de autenticación');
-        const response = await axios.get(`/configuraciones/${clienteId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        configuraciones.value = {
-          sync_analisis_inventario: response.data.sync_analisis_inventario,
-          sync_analisis_produccion: response.data.sync_analisis_produccion,
-        };
-      } catch (err) {
-        console.error('Error al obtener configuraciones:', err);
-        configuraciones.value = {
-          sync_analisis_inventario: false,
-          sync_analisis_produccion: false,
-        };
-      }
-    };
-
     const fetchClientes = async () => {
       try {
         const token = store.state.auth.token;
@@ -296,7 +240,7 @@ export default {
 
         clearPermisos();
 
-        permisosData.forEach((p) => {
+        permisosData.forEach(p => {
           const key = p.subseccion ? `${p.seccion}_${p.subseccion}` : p.seccion;
           if (permisos.value[key] !== undefined) {
             permisos.value[key].push(p.permiso);
@@ -338,7 +282,6 @@ export default {
       idcliente.value = perfil.idcliente;
       perfil_nombre.value = perfil.perfil_nombre;
       await fetchPermisos(perfil.perfil_id);
-      await fetchConfiguraciones(perfil.idcliente);
     };
 
     const updateProfile = async () => {
@@ -378,17 +321,17 @@ export default {
     const savePermisos = async (perfil_id) => {
       const token = store.state.auth.token;
       const permisosToSave = [];
-      secciones.forEach((seccion) => {
+      secciones.forEach(seccion => {
         if (permisos.value[seccion.name]?.length > 0) {
-          permisos.value[seccion.name].forEach((permiso) => {
+          permisos.value[seccion.name].forEach(permiso => {
             permisosToSave.push({ seccion: seccion.name, subseccion: null, permiso });
           });
         }
         if (seccion.subsecciones) {
-          seccion.subsecciones.forEach((subseccion) => {
+          seccion.subsecciones.forEach(subseccion => {
             const key = `${seccion.name}_${subseccion.name}`;
             if (permisos.value[key]?.length > 0) {
-              permisos.value[key].forEach((permiso) => {
+              permisos.value[key].forEach(permiso => {
                 permisosToSave.push({ seccion: seccion.name, subseccion: subseccion.name, permiso });
               });
             }
@@ -406,7 +349,7 @@ export default {
     };
 
     const getClienteNombre = (idcliente) => {
-      const cliente = clientes.value.find((c) => c.idcliente === idcliente);
+      const cliente = clientes.value.find(c => c.idcliente === idcliente);
       return cliente ? cliente.nombre : 'N/A';
     };
 
@@ -415,10 +358,6 @@ export default {
       perfil_nombre.value = '';
       clearPermisos();
       errorMessage.value = '';
-      configuraciones.value = {
-        sync_analisis_inventario: false,
-        sync_analisis_produccion: false,
-      };
     };
 
     const clearPermisos = () => {
@@ -437,8 +376,6 @@ export default {
         dashboard_ventas_medio_pago: [],
         dashboard_ventas_producto: [],
         dashboard_ventas_asesor: [],
-        dashboard_daily_profit: [],
-        dashboard_product_profit: [],
         cargue_ventas_diarias: [],
         cargue_arqueo: [],
         cargue_venta_mensual_historica: [],
@@ -472,11 +409,6 @@ export default {
       editingPerfilId.value = null;
     };
 
-    // Observar cambios en idcliente para cargar configuraciones
-    watch(idcliente, (newIdCliente) => {
-      fetchConfiguraciones(newIdCliente);
-    });
-
     onMounted(() => {
       fetchClientes();
       fetchPerfiles();
@@ -497,7 +429,6 @@ export default {
       deleteProfile,
       cancelEdit,
       getClienteNombre,
-      filteredSubsecciones,
     };
   },
 };

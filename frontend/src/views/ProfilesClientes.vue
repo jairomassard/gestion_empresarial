@@ -20,11 +20,19 @@
                 </label>
               </div>
               <div v-if="seccion.subsecciones" class="subsecciones">
-                <div v-for="subseccion in seccion.subsecciones" :key="subseccion.name" class="subseccion">
+                <div
+                  v-for="subseccion in filteredSubsecciones(seccion.subsecciones)"
+                  :key="subseccion.name"
+                  class="subseccion"
+                >
                   <h5>{{ subseccion.displayName }}</h5>
                   <div v-for="permiso in subseccion.permisos" :key="permiso" class="checkbox-item">
                     <label>
-                      <input type="checkbox" :value="permiso" v-model="permisos[`${seccion.name}_${subseccion.name}`]" />
+                      <input
+                        type="checkbox"
+                        :value="permiso"
+                        v-model="permisos[`${seccion.name}_${subseccion.name}`]"
+                      />
                       {{ permiso }}
                     </label>
                   </div>
@@ -72,6 +80,10 @@ export default {
     const store = useStore();
     const perfiles = ref([]);
     const perfil_nombre = ref('');
+    const configuraciones = ref({
+      sync_analisis_inventario: false,
+      sync_analisis_produccion: false,
+    });
     const permisos = ref({
       dashboard: [],
       cargue: [],
@@ -86,6 +98,8 @@ export default {
       dashboard_ventas_medio_pago: [],
       dashboard_ventas_producto: [],
       dashboard_ventas_asesor: [],
+      dashboard_daily_profit: [],
+      dashboard_product_profit: [],
       cargue_ventas_diarias: [],
       cargue_arqueo: [],
       cargue_venta_mensual_historica: [],
@@ -127,6 +141,8 @@ export default {
           { name: 'ventas_medio_pago', displayName: 'Ventas por Medio de Pago', permisos: ['ver'] },
           { name: 'ventas_producto', displayName: 'Ventas por Producto', permisos: ['ver'] },
           { name: 'ventas_asesor', displayName: 'Ventas por Asesor', permisos: ['ver'] },
+          { name: 'daily_profit', displayName: 'Utilidad Diaria', permisos: ['ver'] },
+          { name: 'product_profit', displayName: 'Utilidad por Producto', permisos: ['ver'] },
         ],
       },
       {
@@ -180,6 +196,39 @@ export default {
       },
     ];
 
+    const filteredSubsecciones = (subsecciones) => {
+      const isSyncEnabled =
+        configuraciones.value.sync_analisis_inventario ||
+        configuraciones.value.sync_analisis_produccion;
+      return subsecciones.filter((subseccion) => {
+        if (['daily_profit', 'product_profit'].includes(subseccion.name)) {
+          return isSyncEnabled;
+        }
+        return true;
+      });
+    };
+
+    const fetchConfiguraciones = async () => {
+      try {
+        const token = store.state.auth.token;
+        const idcliente = store.state.auth.idcliente;
+        if (!token || !idcliente) throw new Error('Autenticación inválida');
+        const response = await axios.get(`/configuraciones/${idcliente}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        configuraciones.value = {
+          sync_analisis_inventario: response.data.sync_analisis_inventario,
+          sync_analisis_produccion: response.data.sync_analisis_produccion,
+        };
+      } catch (err) {
+        console.error('Error al obtener configuraciones:', err);
+        configuraciones.value = {
+          sync_analisis_inventario: false,
+          sync_analisis_produccion: false,
+        };
+      }
+    };
+
     const fetchPerfiles = async () => {
       try {
         const token = store.state.auth.token;
@@ -202,7 +251,7 @@ export default {
         });
         const permisosData = response.data;
         clearPermisos();
-        permisosData.forEach(p => {
+        permisosData.forEach((p) => {
           const key = p.subseccion ? `${p.seccion}_${p.subseccion}` : p.seccion;
           if (permisos.value[key] !== undefined) {
             permisos.value[key].push(p.permiso);
@@ -282,17 +331,17 @@ export default {
     const savePermisos = async (perfil_id) => {
       const token = store.state.auth.token;
       const permisosToSave = [];
-      secciones.forEach(seccion => {
+      secciones.forEach((seccion) => {
         if (permisos.value[seccion.name]?.length > 0) {
-          permisos.value[seccion.name].forEach(permiso => {
+          permisos.value[seccion.name].forEach((permiso) => {
             permisosToSave.push({ seccion: seccion.name, subseccion: null, permiso });
           });
         }
         if (seccion.subsecciones) {
-          seccion.subsecciones.forEach(subseccion => {
+          seccion.subsecciones.forEach((subseccion) => {
             const key = `${seccion.name}_${subseccion.name}`;
             if (permisos.value[key]?.length > 0) {
-              permisos.value[key].forEach(permiso => {
+              permisos.value[key].forEach((permiso) => {
                 permisosToSave.push({ seccion: seccion.name, subseccion: subseccion.name, permiso });
               });
             }
@@ -300,9 +349,11 @@ export default {
         }
       });
       if (permisosToSave.length > 0) {
-        await axios.put(`/perfiles/${perfil_id}/permisos`, { permisos: permisosToSave }, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        await axios.put(
+          `/perfiles/${perfil_id}/permisos`,
+          { permisos: permisosToSave },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
       }
     };
 
@@ -327,6 +378,8 @@ export default {
         dashboard_ventas_medio_pago: [],
         dashboard_ventas_producto: [],
         dashboard_ventas_asesor: [],
+        dashboard_daily_profit: [],
+        dashboard_product_profit: [],
         cargue_ventas_diarias: [],
         cargue_arqueo: [],
         cargue_venta_mensual_historica: [],
@@ -359,6 +412,7 @@ export default {
     };
 
     onMounted(() => {
+      fetchConfiguraciones();
       fetchPerfiles();
     });
 
@@ -374,6 +428,7 @@ export default {
       updateProfile,
       deleteProfile,
       cancelEdit,
+      filteredSubsecciones,
     };
   },
 };

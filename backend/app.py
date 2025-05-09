@@ -10231,6 +10231,45 @@ def get_product_profit():
         return jsonify({"error": str(e)}), 500
 
 
+# consulta de configruaciones para la pagina de perfiles.vue:
+@app.route('/configuraciones/<int:idcliente>', methods=['GET'])
+@jwt_required()
+def get_configuraciones(idcliente):
+    user_id = get_jwt_identity()
+    claims = get_jwt()
+    user_idcliente = claims.get('idcliente')
+
+    # Verificar autorización (superadmin o mismo cliente)
+    if claims.get('perfilid') != 1 and user_idcliente != idcliente:
+        return jsonify({"error": "No autorizado para consultar configuraciones de este cliente"}), 403
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT sync_analisis_inventario, sync_analisis_produccion FROM configuraciones WHERE idcliente = %s",
+            (idcliente,)
+        )
+        config = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not config:
+            # Devolver valores por defecto si no hay registro
+            return jsonify({
+                "sync_analisis_inventario": False,
+                "sync_analisis_produccion": False
+            }), 200
+
+        return jsonify({
+            "sync_analisis_inventario": config[0],
+            "sync_analisis_produccion": config[1]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": "Error al consultar configuraciones", "detail": str(e)}), 500
+
+
+
 #if __name__ == '__main__':
 #    app.run(debug=True, host='0.0.0.0', port=5000)
 

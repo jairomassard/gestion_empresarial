@@ -1,17 +1,8 @@
 <template>
-  <div class="profiles">
+  <div class="profiles-clientes">
     <h3>Gestión de Perfiles</h3>
     <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
     <form @submit.prevent="isEditing ? updateProfile() : createProfile()">
-      <div class="form-group">
-        <label for="idcliente">Cliente:</label>
-        <select id="idcliente" v-model="idcliente" required>
-          <option value="">Seleccione un cliente</option>
-          <option v-for="cliente in clientes" :key="cliente.idcliente" :value="cliente.idcliente">
-            {{ cliente.nombre }}
-          </option>
-        </select>
-      </div>
       <div class="form-group">
         <label for="perfil_nombre">Nombre del Perfil:</label>
         <input type="text" id="perfil_nombre" v-model="perfil_nombre" required />
@@ -29,19 +20,11 @@
                 </label>
               </div>
               <div v-if="seccion.subsecciones" class="subsecciones">
-                <div
-                  v-for="subseccion in filteredSubsecciones(seccion.subsecciones)"
-                  :key="subseccion.name"
-                  class="subseccion"
-                >
+                <div v-for="subseccion in seccion.subsecciones" :key="subseccion.name" class="subseccion">
                   <h5>{{ subseccion.displayName }}</h5>
                   <div v-for="permiso in subseccion.permisos" :key="permiso" class="checkbox-item">
                     <label>
-                      <input
-                        type="checkbox"
-                        :value="permiso"
-                        v-model="permisos[`${seccion.name}_${subseccion.name}`]"
-                      />
+                      <input type="checkbox" :value="permiso" v-model="permisos[`${seccion.name}_${subseccion.name}`]" />
                       {{ permiso }}
                     </label>
                   </div>
@@ -61,14 +44,12 @@
     <table>
       <thead>
         <tr>
-          <th>Cliente</th>
           <th>Nombre</th>
           <th>Acciones</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="perfil in perfiles" :key="perfil.perfil_id">
-          <td>{{ getClienteNombre(perfil.idcliente) }}</td>
           <td>{{ perfil.perfil_nombre }}</td>
           <td>
             <button @click="editProfile(perfil)">Editar</button>
@@ -82,28 +63,21 @@
 
 <script>
 import axios from '@/api/axios';
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useStore } from 'vuex';
 
 export default {
-  name: 'Profiles',
+  name: 'ProfilesClientes',
   setup() {
     const store = useStore();
-    const clientes = ref([]);
     const perfiles = ref([]);
-    const idcliente = ref('');
     const perfil_nombre = ref('');
-    const configuraciones = ref({
-      sync_analisis_inventario: false,
-      sync_analisis_produccion: false,
-    });
     const permisos = ref({
       dashboard: [],
       cargue: [],
-      parametrizacion: [],
       inventario: [],
       production: [],
-      administracion: [],
+      parametrizacion: [],
       dashboard_venta_acumulada_pdv: [],
       dashboard_ventas_historicas: [],
       dashboard_rendimiento_mensual: [],
@@ -112,17 +86,11 @@ export default {
       dashboard_ventas_medio_pago: [],
       dashboard_ventas_producto: [],
       dashboard_ventas_asesor: [],
-      dashboard_daily_profit: [],
-      dashboard_product_profit: [],
       cargue_ventas_diarias: [],
       cargue_arqueo: [],
       cargue_venta_mensual_historica: [],
       cargue_presupuesto_venta: [],
       cargue_puntos_de_venta: [],
-      parametrizacion_perfiles: [],
-      parametrizacion_usuarios: [],
-      parametrizacion_cutoff: [],
-      parametrizacion_sync_config: [],
       inventario_consulta_inventario: [],
       inventario_consulta: [],
       inventario_kardex: [],
@@ -135,9 +103,11 @@ export default {
       inventario_traslados: [],
       production_admin: [],
       production_reportes: [],
-      administracion_crear_clientes: [],
-      administracion_crear_perfiles: [],
-      administracion_crear_usuarios: [],
+      parametrizacion_puntos_de_venta: [],
+      parametrizacion_perfiles: [],
+      parametrizacion_usuarios: [],
+      parametrizacion_cutoff: [],
+      parametrizacion_sync_config: [],
     });
     const errorMessage = ref('');
     const isEditing = ref(false);
@@ -157,8 +127,6 @@ export default {
           { name: 'ventas_medio_pago', displayName: 'Ventas por Medio de Pago', permisos: ['ver'] },
           { name: 'ventas_producto', displayName: 'Ventas por Producto', permisos: ['ver'] },
           { name: 'ventas_asesor', displayName: 'Ventas por Asesor', permisos: ['ver'] },
-          { name: 'daily_profit', displayName: 'Utilidad Diaria', permisos: ['ver'] },
-          { name: 'product_profit', displayName: 'Utilidad por Producto', permisos: ['ver'] },
         ],
       },
       {
@@ -171,17 +139,6 @@ export default {
           { name: 'venta_mensual_historica', displayName: 'Venta Mensual Histórica', permisos: ['editar'] },
           { name: 'presupuesto_venta', displayName: 'Presupuesto de Venta', permisos: ['editar'] },
           { name: 'puntos_de_venta', displayName: 'Puntos de Venta', permisos: ['editar'] },
-        ],
-      },
-      {
-        name: 'parametrizacion',
-        displayName: 'Parametrización',
-        permisos: ['editar'],
-        subsecciones: [
-          { name: 'perfiles', displayName: 'Creación de Perfiles', permisos: ['editar'] },
-          { name: 'usuarios', displayName: 'Creación de Usuarios', permisos: ['editar'] },
-          { name: 'cutoff', displayName: 'Configuración Mes de Corte historico (Cutoff)', permisos: ['editar'] },
-          { name: 'sync_config', displayName: 'Configuración de Sincronización Módulos', permisos: ['editar'] },
         ],
       },
       {
@@ -211,74 +168,25 @@ export default {
         ],
       },
       {
-        name: 'administracion',
-        displayName: 'Administración (Superadmin)',
-        permisos: [],
+        name: 'parametrizacion',
+        displayName: 'Parametrización',
+        permisos: ['editar'],
         subsecciones: [
-          { name: 'crear_clientes', displayName: 'Crear Clientes', permisos: ['crear'] },
-          { name: 'crear_perfiles', displayName: 'Crear Perfiles', permisos: ['crear'] },
-          { name: 'crear_usuarios', displayName: 'Crear Usuarios', permisos: ['crear'] },
+          { name: 'perfiles', displayName: 'Creación de Perfiles', permisos: ['editar'] },
+          { name: 'usuarios', displayName: 'Creación de Usuarios', permisos: ['editar'] },
+          { name: 'cutoff', displayName: 'Configuración Mes de Corte historico (Cutoff)', permisos: ['editar'] },
+          { name: 'sync_config', displayName: 'Configuración de Sincronización Módulos', permisos: ['editar'] },
         ],
       },
     ];
 
-    const filteredSubsecciones = (subsecciones) => {
-      const isSyncEnabled =
-        configuraciones.value.sync_analisis_inventario ||
-        configuraciones.value.sync_analisis_produccion;
-      return subsecciones.filter((subseccion) => {
-        if (['daily_profit', 'product_profit'].includes(subseccion.name)) {
-          return isSyncEnabled;
-        }
-        return true;
-      });
-    };
-
-    const fetchConfiguraciones = async (clienteId) => {
-      if (!clienteId) {
-        configuraciones.value = {
-          sync_analisis_inventario: false,
-          sync_analisis_produccion: false,
-        };
-        return;
-      }
-      try {
-        const token = store.state.auth.token;
-        if (!token) throw new Error('No se encontró token de autenticación');
-        const response = await axios.get(`/configuraciones/${clienteId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        configuraciones.value = {
-          sync_analisis_inventario: response.data.sync_analisis_inventario,
-          sync_analisis_produccion: response.data.sync_analisis_produccion,
-        };
-      } catch (err) {
-        console.error('Error al obtener configuraciones:', err);
-        configuraciones.value = {
-          sync_analisis_inventario: false,
-          sync_analisis_produccion: false,
-        };
-      }
-    };
-
-    const fetchClientes = async () => {
-      try {
-        const token = store.state.auth.token;
-        if (!token) throw new Error('No se encontró token de autenticación');
-        const response = await axios.get('/clientes', { headers: { Authorization: `Bearer ${token}` } });
-        clientes.value = response.data;
-      } catch (err) {
-        errorMessage.value = err.response?.data?.error || 'Error al obtener clientes';
-        console.error('Error al obtener clientes:', err);
-      }
-    };
-
     const fetchPerfiles = async () => {
       try {
         const token = store.state.auth.token;
-        if (!token) throw new Error('No se encontró token de autenticación');
+        const idcliente = store.state.auth.idcliente;
+        if (!token || !idcliente) throw new Error('Autenticación inválida');
         const response = await axios.get('/perfiles', { headers: { Authorization: `Bearer ${token}` } });
-        perfiles.value = response.data;
+        perfiles.value = response.data; // Backend ya filtra por idcliente
       } catch (err) {
         errorMessage.value = err.response?.data?.error || 'Error al obtener perfiles';
         console.error('Error al obtener perfiles:', err);
@@ -293,10 +201,8 @@ export default {
           headers: { Authorization: `Bearer ${token}` },
         });
         const permisosData = response.data;
-
         clearPermisos();
-
-        permisosData.forEach((p) => {
+        permisosData.forEach(p => {
           const key = p.subseccion ? `${p.seccion}_${p.subseccion}` : p.seccion;
           if (permisos.value[key] !== undefined) {
             permisos.value[key].push(p.permiso);
@@ -304,7 +210,6 @@ export default {
             console.warn(`Permiso no soportado en frontend: ${key} - ${p.permiso}`);
           }
         });
-
         console.log('Permisos cargados:', permisos.value);
       } catch (err) {
         errorMessage.value = err.response?.data?.error || 'Error al obtener permisos';
@@ -315,14 +220,14 @@ export default {
     const createProfile = async () => {
       try {
         const token = store.state.auth.token;
-        if (!token) throw new Error('No se encontró token de autenticación');
+        const idcliente = store.state.auth.idcliente;
+        if (!token || !idcliente) throw new Error('Autenticación inválida');
         const perfilResponse = await axios.post(
           '/perfiles',
-          { idcliente: idcliente.value, perfil_nombre: perfil_nombre.value },
+          { idcliente, perfil_nombre: perfil_nombre.value },
           { headers: { Authorization: `Bearer ${token}` } }
         );
         const perfil_id = perfilResponse.data.perfil_id;
-
         await savePermisos(perfil_id);
         clearForm();
         fetchPerfiles();
@@ -335,19 +240,18 @@ export default {
     const editProfile = async (perfil) => {
       isEditing.value = true;
       editingPerfilId.value = perfil.perfil_id;
-      idcliente.value = perfil.idcliente;
       perfil_nombre.value = perfil.perfil_nombre;
       await fetchPermisos(perfil.perfil_id);
-      await fetchConfiguraciones(perfil.idcliente);
     };
 
     const updateProfile = async () => {
       try {
         const token = store.state.auth.token;
-        if (!token) throw new Error('No se encontró token de autenticación');
+        const idcliente = store.state.auth.idcliente;
+        if (!token || !idcliente) throw new Error('Autenticación inválida');
         await axios.put(
           `/perfiles/${editingPerfilId.value}`,
-          { idcliente: idcliente.value, perfil_nombre: perfil_nombre.value },
+          { idcliente, perfil_nombre: perfil_nombre.value },
           { headers: { Authorization: `Bearer ${token}` } }
         );
         await savePermisos(editingPerfilId.value);
@@ -378,57 +282,43 @@ export default {
     const savePermisos = async (perfil_id) => {
       const token = store.state.auth.token;
       const permisosToSave = [];
-      secciones.forEach((seccion) => {
+      secciones.forEach(seccion => {
         if (permisos.value[seccion.name]?.length > 0) {
-          permisos.value[seccion.name].forEach((permiso) => {
+          permisos.value[seccion.name].forEach(permiso => {
             permisosToSave.push({ seccion: seccion.name, subseccion: null, permiso });
           });
         }
         if (seccion.subsecciones) {
-          seccion.subsecciones.forEach((subseccion) => {
+          seccion.subsecciones.forEach(subseccion => {
             const key = `${seccion.name}_${subseccion.name}`;
             if (permisos.value[key]?.length > 0) {
-              permisos.value[key].forEach((permiso) => {
+              permisos.value[key].forEach(permiso => {
                 permisosToSave.push({ seccion: seccion.name, subseccion: subseccion.name, permiso });
               });
             }
           });
         }
       });
-
       if (permisosToSave.length > 0) {
-        await axios.put(
-          `/perfiles/${perfil_id}/permisos`,
-          permisosToSave,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
+        await axios.put(`/perfiles/${perfil_id}/permisos`, { permisos: permisosToSave }, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
       }
     };
 
-    const getClienteNombre = (idcliente) => {
-      const cliente = clientes.value.find((c) => c.idcliente === idcliente);
-      return cliente ? cliente.nombre : 'N/A';
-    };
-
     const clearForm = () => {
-      idcliente.value = '';
       perfil_nombre.value = '';
       clearPermisos();
       errorMessage.value = '';
-      configuraciones.value = {
-        sync_analisis_inventario: false,
-        sync_analisis_produccion: false,
-      };
     };
 
     const clearPermisos = () => {
       permisos.value = {
         dashboard: [],
         cargue: [],
-        parametrizacion: [],
         inventario: [],
         production: [],
-        administracion: [],
+        parametrizacion: [],
         dashboard_venta_acumulada_pdv: [],
         dashboard_ventas_historicas: [],
         dashboard_rendimiento_mensual: [],
@@ -437,17 +327,11 @@ export default {
         dashboard_ventas_medio_pago: [],
         dashboard_ventas_producto: [],
         dashboard_ventas_asesor: [],
-        dashboard_daily_profit: [],
-        dashboard_product_profit: [],
         cargue_ventas_diarias: [],
         cargue_arqueo: [],
         cargue_venta_mensual_historica: [],
         cargue_presupuesto_venta: [],
         cargue_puntos_de_venta: [],
-        parametrizacion_perfiles: [],
-        parametrizacion_usuarios: [],
-        parametrizacion_cutoff: [],
-        parametrizacion_sync_config: [],
         inventario_consulta_inventario: [],
         inventario_consulta: [],
         inventario_kardex: [],
@@ -460,9 +344,11 @@ export default {
         inventario_traslados: [],
         production_admin: [],
         production_reportes: [],
-        administracion_crear_clientes: [],
-        administracion_crear_perfiles: [],
-        administracion_crear_usuarios: [],
+        parametrizacion_puntos_de_venta: [],
+        parametrizacion_perfiles: [],
+        parametrizacion_usuarios: [],
+        parametrizacion_cutoff: [],
+        parametrizacion_sync_config: [],
       };
     };
 
@@ -472,20 +358,12 @@ export default {
       editingPerfilId.value = null;
     };
 
-    // Observar cambios en idcliente para cargar configuraciones
-    watch(idcliente, (newIdCliente) => {
-      fetchConfiguraciones(newIdCliente);
-    });
-
     onMounted(() => {
-      fetchClientes();
       fetchPerfiles();
     });
 
     return {
-      clientes,
       perfiles,
-      idcliente,
       perfil_nombre,
       permisos,
       secciones,
@@ -496,15 +374,13 @@ export default {
       updateProfile,
       deleteProfile,
       cancelEdit,
-      getClienteNombre,
-      filteredSubsecciones,
     };
   },
 };
 </script>
 
 <style scoped>
-.profiles {
+.profiles-clientes {
   padding: 20px;
   max-width: 1200px;
   margin: 0 auto;
@@ -520,8 +396,7 @@ label {
   font-weight: bold;
 }
 
-input,
-select {
+input {
   width: 100%;
   padding: 10px;
   border: 1px solid #ccc;
